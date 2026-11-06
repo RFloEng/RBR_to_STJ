@@ -18,7 +18,7 @@ Format: reRBR notes/formats.md "Collision" and the layout comments of crates/rbr
   graft: each cell's root node overwrites the root placeholder its path reaches; a later cell wins.
   brake wall (at the wall rel): u32 size, u32 n, u32 points rel, u32 root rel (all from the wall start); n (x, y)
         points as (inner, outer) pairs; tree of 0x18-byte nodes {f32 cx, cy, hx, hy, u32 item count, u32 pointer};
-        a leaf's pointer leads to u16 items: bits 0-13 index, bit 14 sensor only, bit 15 respawn.
+        a leaf's pointer (relative to the tree root, like child pointers) leads to u16 items: bits 0-13 index, bit 14 sensor only, bit 15 respawn.
         INFERRED (no retail file at hand): an item index k names the segment between point pairs k and k+1.
 """
 
@@ -166,7 +166,8 @@ def _brake_wall(data: bytes, off: int) -> BrakeWall | None:
         raise FormatError(".col: brake-wall points run past the end of the file")
     pts = [struct.unpack_from("<2f", data, poff + 8 * i) for i in range(n)]
     items: dict[int, WallItem] = {}
-    stack = [off + rrel]
+    base = off + rrel   # node and item pointers are relative to the tree root
+    stack = [base]
     seen = set()
     while stack:
         noff = stack.pop()
@@ -175,7 +176,7 @@ def _brake_wall(data: bytes, off: int) -> BrakeWall | None:
         seen.add(noff)
         _cx, _cy, _hx, _hy, nitems, ptr = struct.unpack_from("<4fII", data, noff)
         if nitems:
-            ioff = off + ptr
+            ioff = base + ptr
             if ioff + 2 * nitems > len(data):
                 raise FormatError(".col: brake-wall leaf items run past the end of the file")
             for u in struct.unpack_from(f"<{nitems}H", data, ioff):
@@ -184,8 +185,8 @@ def _brake_wall(data: bytes, off: int) -> BrakeWall | None:
                 items[idx] = WallItem(idx, bool(u & 0x4000) or (prev.sensor if prev else False),
                                       bool(u & 0x8000) or (prev.respawn if prev else False))
         elif ptr:
-            stack.append(off + ptr + 0x18)
-            stack.append(off + ptr)
+            stack.append(base + ptr + 0x18)
+            stack.append(base + ptr)
     return BrakeWall(pts, [items[k] for k in sorted(items)])
 
 

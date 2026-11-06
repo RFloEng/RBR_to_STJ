@@ -36,6 +36,7 @@ class WeatherRow:
     cloud_letter: str | None
     preset: str
     cloud: str
+    settings: dict = field(default_factory=dict)     # every key of the TrackSettings section, verbatim
 
 
 @dataclass
@@ -107,6 +108,7 @@ def read_folder(folder: Path) -> RsfInfo | None:
         for s in ini.parse(guard.read_file(ts)):
             row = parse_weather(sid, s.name)
             if row:
+                row.settings = {k: v for k, v in s.entries}
                 info.weathers.append(row)
     return info
 

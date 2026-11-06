@@ -18,6 +18,8 @@ from pathlib import Path
 from ..convert import Options
 from ..errors import Rbr2StjError
 from ..ir import Stage
+from .. import textures
+from . import lbs_extras
 from . import lbs_visual, stj_doc, usd_mesh
 from .stj_doc import slug
 
@@ -30,7 +32,7 @@ def find_stj_tools() -> Path | None:
         cands.append(Path(os.environ["STJ_TOOLS"]))
     here = Path(__file__).resolve()
     for up in (here.parents[3], here.parents[4] if len(here.parents) > 4 else here.parents[3], Path.cwd()):
-        cands += [up / "reference" / "STJ" / "tools", up.parent / "STJ-Standard-Track-Json" / "tools"]
+        cands += [up.parent / "STJ repo" / "tools", up / "reference" / "STJ" / "tools", up.parent / "STJ-Standard-Track-Json" / "tools"]
     for c in cands:
         if (c / "validate.py").is_file():
             return c
@@ -82,11 +84,53 @@ def _same(a: Stage, b: Stage, *exts: str) -> bool:
     return all(a.file_hashes.get(k) is not None and a.file_hashes.get(k) == b.file_hashes.get(k) for k in exts)
 
 
+def _stem(name: str) -> str:
+    return name.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+
+
+def _chosen_sky(stage: Stage, fname: str, items):
+    """Names of the dome meshes the first weather selects (`CloudName` for Clouds.lbs, `SkyboxName` for skyboxes.lbs),
+    or None to show everything when no weather names one."""
+    if not stage.weathers:
+        return None
+    key = "cloudname" if fname.lower().startswith("clouds") else "skyboxname"
+    want = next((v for k, v in stage.weathers[0].settings.items() if k.lower() == key), None)
+    if not want:
+        return None
+    stems = {_stem(i.name) for i in items}
+    w = want.lower()
+    best = max((s for s in stems if w == s or w.startswith(s)), key=len, default=None)
+    return {best} if best else None
+
+
+def _asset_manifest(folder: Path, rels: list[str], stage: Stage) -> list[dict]:
+    """`assets[]` (spec 5.3): every texture copied into the package, with its hash and the licence it came with."""
+    import hashlib
+    src = "Richard Burns Rally / RallySimFans stage content" if stage.kind == "rbr-classic" else "BTB track archive"
+    out = []
+    for rel in rels:
+        f = folder / rel
+        if not f.is_file():
+            continue
+        out.append({"id": stj_doc.slug(Path(rel).stem, "texture"), "uri": rel, "role": "texture",
+                    "sha256": hashlib.sha256(f.read_bytes()).hexdigest(),
+                    "licence": {"redistributable": False, "notes": "Copied unchanged from content the user owns; not for redistribution."},
+                    "source": src})
+    seen: dict = {}
+    for a in out:                              # ids must be unique
+        n = seen[a["id"]] = seen.get(a["id"], 0) + 1
+        if n > 1:
+            a["id"] = f"{a['id']}_{n}"
+    return out
+
+
 def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tuple[Stage, dict] | None = None):
     """Write the stage's mesh layers (reusing the base stage's when the source files are byte-identical, which
     answers PLAN open question 7 per stage); returns (`mesh_files` for build_document, layers written)."""
     mesh_files: dict = {}
     written: list[Path] = []
+    exporter = (textures.TextureExporter(stage.texture_source, folder / 'textures')
+                if stage.texture_source is not None and opt.textures else None)
     if stage.collision is not None:
         if base and _same(stage, base[0], "col", "mat") and "collision" in base[1]:
             mesh_files["collision"] = base[1]["collision"]
@@ -115,23 +159,76 @@ def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tup
             written.append(folder / rel)
     if stage.visual:
         rel = f"meshes/{stem}_visual.usda"
-        info = usd_mesh.write_visual(folder / rel, stage.visual, stage.btb_track, stage.shift)
+        info = usd_mesh.write_visual(folder / rel, stage.visual, stage.btb_track, stage.shift, exporter)
         stage.diagnostics["visual"] = info
         mesh_files.setdefault("extra", []).append({"id": "visual", "uri": rel, "roles": ["visual"]})
         written.append(folder / rel)
     if stage.lbs_visual:
-        shared = None
+        shared = []
         if base and _same(stage, base[0], "lbs", "ini"):
-            shared = next((e for e in base[1].get("extra", []) if e["id"] == "visual"), None)
+            shared = [e for e in base[1].get("extra", []) if e["id"] in ("visual", "visual_lod1")]
         if shared:
-            mesh_files.setdefault("extra", []).append(shared)
+            mesh_files.setdefault("extra", []).extend(shared)
+            if base[0].x_rbr.get("texture_files") is not None:
+                stage.x_rbr["texture_files"] = base[0].x_rbr["texture_files"]
         else:
             tris = sum(c.triangles for b in stage.lbs_visual for c in b.chunks if c.draw_list != 3)
             rel = f"meshes/{stem}_visual.{_mesh_ext(opt, tris)}"
-            info = lbs_visual.write_lbs_visual(folder / rel, stage.lbs_visual, stage.texture_requests, stage.shift)
+            info = lbs_visual.write_lbs_visual(folder / rel, stage.lbs_visual, stage.texture_requests, stage.shift, exporter)
             stage.diagnostics["visual"] = info
-            mesh_files.setdefault("extra", []).append({"id": "visual", "uri": rel, "roles": ["visual"]})
+            # vertex colour is the game's baked light: said so (spec 7.2 `baked`), never multiplied into the materials
+            mesh_files.setdefault("extra", []).append({
+                "id": "visual", "uri": rel, "roles": ["visual"],
+                "baked": {"vertex_colour": {"primvar": "displayColor", "role": "light"}}})
             written.append(folder / rel)
+            far_tris = sum(c.triangles for b in stage.lbs_visual for c in b.chunks if c.draw_list == 3)
+            if far_tris:
+                rel = f"meshes/{stem}_visual_lod1.{_mesh_ext(opt, far_tris)}"
+                stage.diagnostics["visual_lod1"] = lbs_visual.write_lbs_visual(
+                    folder / rel, stage.lbs_visual, stage.texture_requests, stage.shift, exporter, far=True)
+                mesh_files["extra"].append({
+                    "id": "visual_lod1", "uri": rel, "roles": ["lod"],
+                    "lod": {"of": "visual", "level": 1, "switch_distance": 600.0,
+                            "_est": True, "_note": "RBR draw list 3 (far); the switch distance is the ~600 m the game's "
+                                                   "renderer is documented to use, not a stored value"},
+                    "baked": {"vertex_colour": {"primvar": "displayColor", "role": "light"}}})
+                written.append(folder / rel)
+    if stage.lbs_extras:
+        groups = [("visual_extras", {"lanes", "interactive", "clouds", "sky"}, {}),
+                  ("visual_reflection", {"reflection"}, {"reflective": True}),
+                  ("visual_water", {"water"}, {})]
+        for mid, names, flags in groups:
+            items = [i for i in stage.lbs_extras if i.group in names]
+            if not items:
+                continue
+            rel = f"meshes/{stem}_{mid.split('visual_')[-1] if mid != 'visual_extras' else 'extras'}.{_mesh_ext(opt, sum(len(i.indices) // 3 for i in items))}"
+            info = lbs_extras.write_extras(folder / rel, items, stage.texture_requests, stage.shift, exporter)
+            paths = info.pop("placement_paths", {})
+            stage.diagnostics.setdefault("visual_extras", {})[mid] = info
+            mesh_files.setdefault("extra", []).append({"id": mid, "uri": rel, "roles": ["visual"], **flags})
+            written.append(folder / rel)
+            if mid == "visual_extras":
+                mesh_files["interactive_paths"] = paths
+            if mid == "visual_water":
+                mesh_files["visual_water"] = mid
+    for fname, tex, items in stage.sky_files:
+        rel = f"meshes/{stem}_{fname.rsplit('.', 1)[0].lower()}.{_mesh_ext(opt, sum(len(i.indices) // 3 for i in items))}"
+        sky_exp = (textures.TextureExporter(stage.texture_source, folder / 'textures')
+                   if exporter is not None else None)
+        if sky_exp is not None:
+            sky_exp.done, sky_exp._names = exporter.done, exporter._names      # one shared texture folder and cache
+            sky_exp.failed = exporter.failed
+        chosen = _chosen_sky(stage, fname, items)
+        stage.diagnostics.setdefault("sky_files", {})[fname] = lbs_extras.write_extras(
+            folder / rel, items, tex, (0.0, 0.0), sky_exp,
+            visible=lambda it, c=chosen: c is None or _stem(it.name) in c)
+        mesh_files.setdefault("extra", []).append({"id": rel.rsplit('/', 1)[-1].rsplit('.', 1)[0], "uri": rel,
+                                                    "roles": ["visual"]})
+        written.append(folder / rel)
+    if exporter is not None and exporter.done:
+        stage.diagnostics["textures"] = exporter.summary()
+        stage.x_rbr["texture_files"] = {k: v[0] for k, v in exporter.done.items() if v}
+        mesh_files["assets"] = _asset_manifest(folder, sorted({v[0] for v in exporter.done.values() if v}), stage)
     return mesh_files, written
 
 
@@ -161,8 +258,22 @@ def write_package(stages: list[Stage], out: Path, opt: Options | None = None, us
     variants_meta = [{"letter": s.info.letter, "override": f"{stem}_{s.info.letter.lower()}.usda"}
                      for s in stages[1:]]
     mesh_files, written = _write_meshes(base, folder, stem, opt)
-    doc = stj_doc.build_document(base, mesh_files=mesh_files, user_table=user_table, variants=variants_meta,
-                                 base_letter=base_letter, source_files=())
+    # one weather variant per further weather of the base letter: a patch of the sky (fog) and lighting
+    wx_meta, wx_patches, wx_ids = [], {}, {}
+    first_w = stj_doc.base_weather(base, base_letter)
+    for w in base.weathers:
+        if first_w is None or w is first_w or w.letter != base_letter:
+            continue
+        patch = merge_diff(stj_doc.weather_env(first_w), stj_doc.weather_env(w))
+        if not patch:
+            continue
+        vid = f"weather_{slug(w.section, 'w')}"
+        wx_ids[w.section] = vid
+        wx_patches[vid] = {"environment": patch}
+        wx_meta.append({"id": vid, "name": w.section, "override": f"{stem}_wx_{len(wx_meta) + 1}.usda"})
+    all_variants = variants_meta + wx_meta
+    doc = stj_doc.build_document(base, mesh_files=mesh_files, user_table=user_table, variants=all_variants,
+                                 base_letter=base_letter, source_files=(), wx_ids=wx_ids)
     mesh_rels = [str(p.relative_to(folder)).replace("\\", "/") for p in written]
     _root_layer(root, mesh_rels, base.info.name)
     embed(doc, root)
@@ -171,8 +282,8 @@ def write_package(stages: list[Stage], out: Path, opt: Options | None = None, us
     for st, vm in zip(stages[1:], variants_meta):
         vstem = f"{stem}_{st.info.letter.lower()}"
         v_files, v_written = _write_meshes(st, folder, vstem, opt, (base, mesh_files))
-        vdoc = stj_doc.build_document(st, mesh_files=v_files, user_table=user_table, variants=variants_meta,
-                                      base_letter=base_letter)
+        vdoc = stj_doc.build_document(st, mesh_files=v_files, user_table=user_table, variants=all_variants,
+                                      base_letter=base_letter, wx_ids=wx_ids)
         vdoc.pop("variants", None)
         d = dict(doc)
         d.pop("variants", None)
@@ -183,6 +294,11 @@ def write_package(stages: list[Stage], out: Path, opt: Options | None = None, us
         patch.pop("_metadata", None)          # provenance stays the base's; the variant only changes the stage
         _variant_layer(folder / vm["override"], root.name, st.info.letter, patch)
         pkg.files += [folder / vm["override"]] + v_written
+
+    for vm in wx_meta:
+        _variant_layer(folder / vm["override"], root.name, "", wx_patches[vm["id"]], kind="weather",
+                       description=f"RBR weather {vm['name']}: sky and lighting differences from the base weather")
+        pkg.files.append(folder / vm["override"])
 
     pkg.json_path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     pkg.files.append(pkg.json_path)
@@ -202,18 +318,18 @@ def write_package(stages: list[Stage], out: Path, opt: Options | None = None, us
     return pkg
 
 
-def _variant_layer(path: Path, base_name: str, letter: str, patch: dict):
+def _variant_layer(path: Path, base_name: str, letter: str, patch: dict, kind: str | None = None, description: str | None = None):
     from pxr import Sdf
     if path.exists():
         path.unlink()
     layer = Sdf.Layer.CreateNew(str(path))
     layer.subLayerPaths.append(f"./{base_name}")
     layer.Save()
-    kind = stj_doc.VARIANT_KIND.get(letter, "other")
+    kind = kind or stj_doc.VARIANT_KIND.get(letter, "other")
     kind = kind if kind in ("weather", "time_of_day", "season", "other") else "other"
     embed({"_metadata": {"specification": "STJ-OVERRIDE", "version": stj_doc.VERSION, "base": f"./{base_name}",
                          "variant": kind,
-                         "description": f"RBR variant letter {letter}: only what differs from the base stage."},
+                         "description": description or f"RBR variant letter {letter}: only what differs from the base stage."},
            "patch": patch}, path)
 
 

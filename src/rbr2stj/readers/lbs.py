@@ -32,6 +32,11 @@ VIEW_STRIDES = (0x10, 0x18, 0x30, 0x24, 0x3C, 0x20, 0x38, 0x2C, 0x44)
 RENDER_CHUNK_LEN = 0x70
 # slot -> (colour offset, uv0 offset or None) for the layouts known from the renderer
 SLOT_LAYOUT = {0: (12, None), 5: (12, 16), 7: (12, 16), 6: (24, 28), 8: (24, 28)}
+# more per-vertex data (reRBR notes/formats.md "Shaders and vertex layouts"): offsets of the second UV set, the
+# specular UV, the shadow-map UV, and (slots 6 and 8) the normal at 12
+EXTRA_UV = {5: {"uv1": 24}, 6: {"uv1": 36, "spec": 44}, 7: {"uv1": 24, "shadow": 32},
+            8: {"uv1": 36, "spec": 44, "shadow": 56}}
+NORMAL_SLOTS = (6, 8)
 
 
 @dataclass
@@ -65,6 +70,8 @@ class View:
     positions: list[tuple[float, float, float]]
     colours: list[int | None]                 # D3DCOLOR (BGRA) words
     uvs: list[tuple[float, float] | None]
+    extra_uvs: dict = field(default_factory=dict)      # "uv1" | "spec" | "shadow" -> list of (u, v)
+    normals: list | None = None                       # slots 6 and 8
 
 
 @dataclass
@@ -139,7 +146,12 @@ def _geometry(payload: bytes, out: LbsFile):
                 pos.append(struct.unpack_from("<3f", raw, o))
                 col.append(struct.unpack_from("<I", raw, o + lay[0])[0])
                 uv.append(struct.unpack_from("<2f", raw, o + lay[1]) if lay[1] is not None else None)
-            views.append(View(indices, pos, col, uv))
+            view = View(indices, pos, col, uv)
+            for label, off in EXTRA_UV.get(slot, {}).items():
+                view.extra_uvs[label] = [struct.unpack_from("<2f", raw, v * stride + off) for v in range(nv)]
+            if slot in NORMAL_SLOTS:
+                view.normals = [struct.unpack_from("<3f", raw, v * stride + 12) for v in range(nv)]
+            views.append(view)
         nchunks = r.u32()
         chunks = []
         for _ in range(nchunks):

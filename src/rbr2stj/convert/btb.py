@@ -22,7 +22,7 @@ from ..errors import FormatError, Rbr2StjError
 from ..ir import CollisionMesh, Info, Line, Pose, Prop, Stage, SurfaceState, Timing
 from ..readers import btb
 from . import Options
-from .classic import LIMIT_M, build_line, chainage_check, tangent_check
+from .classic import LIMIT_M, build_line, chainage_check, clamp_to_line, tangent_check
 from .pacenotes import RawNote, convert_notes, direction_check
 from .project import RefLine
 from .surfaces import pack_state, top3
@@ -67,6 +67,24 @@ def mesh_faces_surfaces(track: btb.BtbTrack, mesh):
     return out
 
 
+def _scale_unit_tangents(line, diag):
+    """BTB drivelines store a direction of about unit length per segment, while STJ tangents are dP/du over the segment
+    (about one chord long, spec 7.1). When the stored tangents are far shorter than their chords, each is scaled to the
+    chord of its own segment (direction kept); the stored values stay in x_rbr.tangents_raw."""
+    r = diag.get("tangent_to_chord_ratio")
+    if not r or r["median"] >= 0.5:
+        return
+    out = []
+    for i, t in enumerate(line.tangents_raw):
+        j = min(i, len(line.points) - 2)
+        chord = math.dist(line.points[j], line.points[j + 1])
+        n = math.dist((0, 0, 0), t)
+        out.append(tuple(c * chord / n for c in t) if n > 1e-9 else tuple(b - a for a, b in zip(line.points[j], line.points[j + 1])))
+    line.tangents = out
+    line.tangents_in = [out[0]] + out[:-1]
+    diag["tangents_scaled_to_chord"] = True
+
+
 def convert_btb(path, opt: Options | None = None) -> Stage:
     opt = opt or Options()
     t = btb.open_folder(path)
@@ -91,8 +109,9 @@ def convert_btb(path, opt: Options | None = None) -> Stage:
         return (p[0] - ox, p[1] - oy, p[2])
 
     tangent_check(line, diag)
+    _scale_unit_tangents(line, diag)
     chainage_check(line, diag)
-    ref = RefLine(line.points, line.tangents, line.chainage)
+    ref = RefLine(line.points, line.tangents, line.chainage, line.tangents_in)
     off = line.chainage_offset
 
     info = Info(name=t.name or Path(path).name, surface=t.physics if t.physics in ("gravel", "tarmac", "snow") else None,
@@ -117,9 +136,16 @@ def convert_btb(path, opt: Options | None = None) -> Stage:
             lost.append(f"pacenotes.ini has no {name} key (tag {21 if name == 'start' else 22}), so timing.{name} is missing")
     raw_notes = [RawNote(n.tag, n.flags, n.distance - off) for n in t.notes]
 
+    texture_source = None
+    if opt.textures and not opt.no_geometry:
+        from .. import textures as _tex
+        from ..readers.stage_files import in_dir
+        tz = in_dir(t.folder, "Textures.zip")
+        texture_source = _tex.TextureSource([tz] if tz else [], [], [])
     stage = Stage(kind="rbr-btb", info=info, source=f"{t.folder.name}", line=line, timing=timing, raw_notes=raw_notes,
                   lost=lost, diagnostics=diag)
     stage.origin_offset = origin
+    stage.texture_source = texture_source
     stage.shift = (ox, oy)
     folder = t.folder
     stage.file_hashes = {"ini": hashlib.sha256((folder / "driveline.ini").read_bytes()).hexdigest()}
@@ -136,6 +162,7 @@ def convert_btb(path, opt: Options | None = None) -> Stage:
     notes, skipped = convert_notes(stage.raw_notes)
     stage.x_rbr["notes_skipped"] = skipped
     stage.notes = notes
+    clamp_to_line(stage)
     diag["pacenotes"] = {"count": len(notes), "direction_vs_geometry": direction_check(notes, ref)}
     lost.append("weather and sky: a BTB stage borrows RBR map 41's sky and weather rows, so STJ has no weather data")
     lost.append("BTB shaders (effects/techniques are kept by name in the visual materials only)")

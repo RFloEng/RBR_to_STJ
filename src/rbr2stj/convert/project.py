@@ -16,9 +16,10 @@ import math
 class RefLine:
     SAMPLES = 16        # dense samples per segment used for projection
 
-    def __init__(self, points, tangents=None, chainage=None):
+    def __init__(self, points, tangents=None, chainage=None, tangents_in=None):
         self.points = [tuple(float(c) for c in p) for p in points]
         self.tangents = [tuple(float(c) for c in t) for t in tangents] if tangents else None
+        self.t_in = [tuple(float(c) for c in t) for t in tangents_in] if tangents_in else self.tangents
         n = len(self.points)
         if n < 2:
             raise ValueError("a reference line needs at least two points")
@@ -36,7 +37,7 @@ class RefLine:
         a, b = self.points[i], self.points[i + 1]
         if not self.tangents:
             return tuple(a[k] + u * (b[k] - a[k]) for k in range(3))
-        ta, tb = self.tangents[i], self.tangents[i + 1]
+        ta, tb = self.tangents[i], self.t_in[i + 1]
         u2, u3 = u * u, u * u * u
         h00, h10, h01, h11 = 2 * u3 - 3 * u2 + 1, u3 - 2 * u2 + u, -2 * u3 + 3 * u2, u3 - u2
         return tuple(h00 * a[k] + h10 * ta[k] + h01 * b[k] + h11 * tb[k] for k in range(3))
@@ -45,7 +46,7 @@ class RefLine:
         a, b = self.points[i], self.points[i + 1]
         if not self.tangents:
             return tuple(b[k] - a[k] for k in range(3))
-        ta, tb = self.tangents[i], self.tangents[i + 1]
+        ta, tb = self.tangents[i], self.t_in[i + 1]
         u2 = u * u
         d00, d10, d01, d11 = 6 * u2 - 6 * u, 3 * u2 - 4 * u + 1, -6 * u2 + 6 * u, 3 * u2 - 2 * u
         return tuple(d00 * a[k] + d10 * ta[k] + d01 * b[k] + d11 * tb[k] for k in range(3))

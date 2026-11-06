@@ -26,11 +26,15 @@ Each reader's docstring cites the exact note. The answers to the open questions 
 |---|---|---|
 | driveline points | `reference.centerline.points` | |
 | driveline `distance` | `reference.centerline.chainage` | defines `s`; falls back to recomputed arc length (and says so in `lost`) if it is not strictly increasing |
-| driveline `tangent` | `reference.centerline.tangents` | passed through unscaled: they are already `dP/du` per segment (Q1); raw copy in `x_rbr.tangents_raw` |
+| driveline `tangent` | `reference.centerline.tangents_out` / `tangents_in` | one per segment, written as stored (`tangents_in[i + 1] = tangents_out[i]`), so the game's own curve is reproduced exactly (spec 7.1). BTB stores about unit-length directions: they are scaled to the chord of their segment (`diagnostics.tangents_scaled_to_chord`); raw copy in `x_rbr.tangents_raw` |
 | no width | `centerline.width {3.5, 3.5, _est}` | placeholder |
 | marker `0x15` / `0x16` / `0x17` / `0x18` | `timing.start` / `finish` / `split_points[split<n>]` / `stop` | the last key of a tag wins; at most 16 splits |
 | BTB notes with tags 21–24 | the same four | BTB's `pacenotes.ini` carries the keys the plugin builds into the `.dls` |
 | other keys | `race.pacenotes.notes` | table below; `x_rbr {tag, flags}` on every note; `distance_to_next` never written |
+| `TrackSettings` `SunDir`, `Diffuse*`, `Ambient*` | `environment.lighting.sun.direction` (negated, axes swapped: towards the sun, Z up), `sun.color`, `ambient` | one set per weather; the first weather of the base letter is in the document, every other weather is a `weather` variant (`<name>_wx_N.usda`) patching `environment.sky` and `.lighting`, referenced by `weather_options[].variant` |
+| `.dls` sound spheres | `audio.emitters[]` with no `sound`, `max_distance` = the radius word, `x_rbr` (the event name is not in the stage files) | |
+| `.lbs (1,6)` objects named *CLOCK* / *FLAG* | `animated_objects[]` `kind` clock / flag, `target` = the placed prims, no `time_range`, `x_rbr` | the game's script moves them |
+| copied textures | `assets[]` `{id, uri, role: texture, sha256, licence.redistributable: false, source}` | |
 | animation triggers | `x_rbr.triggers[] {object, s, lead}` | also plain triggers, named triggers, sound spheres, animation objects (name, ids, script names) |
 | `.lbs (2,11)` / BTB `spawn.ini` | `race.spawns[start].pose` | |
 | RSF `Tracks<id>.ini` | `track_info` (name, `primary_surface`, `length`, country), author | `Surface` is **0 tarmac, 1 gravel, 2 snow** (see Q-notes) |
@@ -105,8 +109,11 @@ extended-id bit `0x4000` stay in `x_rbr` (`unmapped_flags`, `extended_id`). `cal
 | kind 8 log pole / 9–10 fence bar, pole | class `pole` / `fence` (props, not edges: placements carry no `s`) |
 | kind 0 static, by surface id | `bush` / `tree` (trunk collision) / `rock` / `pole` / `prop`; `Bendable_Tree` → `physics.mode: bendable` (stiffness `_est`) |
 | `.fnc` group | `edges[kind: barrier]`, `style` tape (height 0.074) or fence (0.9), `tearable` from the type table, posts in `x_rbr` |
-| BTB `.x` + `.xform` | `meshes/<name>_visual.usda`: one prototype `Mesh` per `.x` under a `PointInstancer` (a plain transform for one placement); materials named after the `materials.ini` section with `stj:diffuseTexture` (name only); `LODIn/LODOut` as `stj:lodIn/lodOut` and in `x_btb.objects` |
-| classic `.lbs (1,0)` | `meshes/<name>_visual.*`: a `Mesh` per (block, view slot), a `GeomSubset` + material per render chunk (texture 0, name only), `st` and `displayColor` primvars; far-LOD chunks (draw list 3) dropped |
+| BTB `.x` + `.xform` | `meshes/<name>_visual.usda`: one prototype `Mesh` per `.x` under a `PointInstancer` (a plain transform for one placement); materials named after the `materials.ini` section with `stj:diffuseTexture`; the image from `Textures.zip` is copied unchanged to `textures/` and bound (UsdPreviewSurface + UsdUVTexture, cut-out opacity when it has alpha); `LODIn/LODOut` as `stj:lodIn/lodOut` and in `x_btb.objects` |
+| classic `.lbs (1,0)` | `meshes/<name>_visual.*`: a `Mesh` per (block, view slot), a `GeomSubset` + material per render chunk (texture 0 shaded, a second texture copied and recorded as `stj:texture2File`), `st`, `st1`, `st_specular`, `st_shadow`, normals (slots 6, 8) and `displayColor` (baked light, never applied to the material); far-LOD chunks (draw list 3) in `<name>_visual_lod1.*`, a `lod` mesh of the near one (`switch_distance` 600 m, the renderer's documented value); the mesh entry carries `baked.vertex_colour {displayColor, light}`; cutout materials make their mesh `doubleSided` (spec 7.7) |
+| classic `.lbs (1,1) (1,3) (1,6) (1,7) (1,8)` | `meshes/<name>_extras.*` (lanes, interactive, clouds, sky), `<name>_reflection.*` (a mesh with `reflective: true`) and `<name>_water.*` (a non-physical `water.bodies[]` entry, `physical: false`): object lanes (trees, grass; alpha test 60/255), the stage's sky dome (`SUPERBOWL.KSH` backdrop), interactive objects (a class prototype per draw plus one referenced Xform per stored matrix), reflection and water faces; unknown words, keys and boxes kept in `stj:extra` |
+| shared `Clouds.lbs`, `skyboxes.lbs` | `meshes/<name>_clouds.*`, `_skyboxes.*`: every cloud / sky mesh; only the one the first weather's `CloudName` / `SkyboxName` selects is visible |
+| textures | `textures/`: the original `.dds`/`.tga` bytes (never re-encoded) found by base name in the stage's `*_textures.rbz`, the remap targets, other texture sets in `Maps`, dry and unworn (`normal`) first; `--no-textures` switches it off |
 
 ## Package layout
 
@@ -172,13 +179,12 @@ Every conversion lists these in `_metadata.provenance.converted_from[].lost`; st
 
 - Grip and all tyre physics (they live in NGP/`physics.lsp`); surfaces carry class and RBR id only
 - NGP ruts and deformation state
-- Baked vertex light, shadow maps and RBR shaders (classic: vertex colour is kept as `displayColor`; BTB: effect and
-  technique names are kept on the materials)
+- RBR shaders and the exact blend of the two textures (classic: baked vertex colour is kept as `displayColor`, not applied; BTB: effect and
+  technique names are kept on the materials); `shadow_N.dat` shadow maps and specular maps are not found in RSF installs
 - Lua character scripts and animations (names only, in `x_rbr`)
 - Particle systems (file name only)
-- Visibility cells and near/far/always draw lists (classic: far-LOD chunks are not written)
-- Classic visual geometry beyond the render chunks: sky and cloud domes, object lanes, reflection and water faces,
-  interactive objects, shadow and specular maps, textures themselves
+- Visibility cells (2,10) and containers (2,15/18); draw lists are kept as `stj:drawList` / far-LOD meshes
+- Classic vertex words past the documented offsets (kept only as the raw stride in `stj:stride`); lane sway parameters
 - `.col` cells overwritten by a later graft; surface changes inside one triangle (sampled at the corners)
 - Tilt of BTB box colliders; non-uniform scale of classic props (kept raw in `x_rbr`)
 - BTB weather and sky (BTB borrows map 41's rows)

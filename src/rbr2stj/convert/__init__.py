@@ -13,4 +13,5 @@ class Options:
     surface_table: dict | None = None     # user JSON: {"<rbr surface id or name>": {mf_scaling, mu, ...}}
     surface_states: str = "all"           # "all": nine wear x wetness maps; "default": normal x (default wetness)
     mesh_format: str = "auto"             # usda | usdc | auto (usdc above 50k faces)
+    textures: bool = True                 # copy the stage's textures (unchanged) into the package (--no-textures)
     visual: bool = True                   # BTB visual meshes / classic .lbs geometry when available

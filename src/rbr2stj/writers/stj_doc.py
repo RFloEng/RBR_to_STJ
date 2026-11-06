@@ -21,10 +21,10 @@ LOST_ALWAYS = [
     "`mf_scaling`, friction and deformation numbers are absent (surfaces carry class and RBR id only; "
     "--surface-table can supply numbers)",
     "NGP ruts and deformation state",
-    "Baked vertex light, shadow maps and RBR shaders",
+    "Shadow and specular maps and RBR shaders (baked vertex light is kept as displayColor, marked baked.vertex_colour)",
     "Lua character scripts and animations (script names are kept in x_rbr)",
     "Particle systems (the particle file name is kept in x_rbr)",
-    "Visibility cells and near/far/always draw lists",
+    "Visibility cells and containers",
 ]
 
 TIME_OF_DAY = {"M": "09:00", "E": "18:00", "N": "22:00", "O": "12:00"}
@@ -72,7 +72,7 @@ def metadata(stage: Stage, extra_lost: list[str], source_files: list[str]) -> di
         "source_format": "RBR/BTB" if is_btb else "RBR",
         "licence": {"redistributable": False,
                     "notes": "Converted from Richard Burns Rally content the user owns. Not for redistribution; "
-                             "textures and scenery assets are referenced by name only, never embedded."},
+                             "the textures are copied unchanged from the game and listed in assets[]."},
         "provenance": {
             "type": "converted",
             "detail": "Converted by rbr2stj from the stage files; surface classes are estimates from RBR surface names.",
@@ -162,12 +162,18 @@ def prototypes_and_instances(stage: Stage, prim_paths: dict[str, str], mesh_id: 
                  "x_rbr": {"kind": p.kind, "material": p.material, "surface": surfaces_table.name(p.material),
                            "dynamic": p.dynamic, **({"shape": _shape_json(p.shape)} if p.shape else {})}}
         proto.update(extra)
+        if proto.get("collision") == "trunk":
+            sx, sy, sz = _bbox_size(p)
+            proto["collision_radius"] = _r(max(sx, sy) / 2, 3)
+            proto["height"] = _r(sz, 3)
+            proto["_note"] = "collision_radius and height are the horizontal half-extent and height of the collision mesh"
         if phys:
             proto["physics"] = phys
         protos[pid] = proto
         if p.transforms:
             tf = []
             for x, y, z, h, s in p.transforms:
+                s = abs(s) or 1.0        # a negative scale (a mirrored placement) is invalid in STJ; the raw one is in x_rbr.placements
                 row = [_r(x), _r(y), _r(z), _r(h, 4)]
                 if abs(s - 1.0) > 1e-4:
                     row.append(_r(s, 4))
@@ -213,8 +219,8 @@ def prop_class(p):
     n = surfaces_table.name(p.material).lower()
     extra = {"collision": "mesh"}
     if n.startswith("bendable_tree"):
-        return "tree", {"mode": "bendable", "stiffness": 500.0, "_est": True,
-                        "_note": "stiffness is an estimate"}, {}
+        return "tree", {"mode": "bendable", "mass": 50.0, "stiffness": 500.0, "_est": True,
+                        "_note": "mass and stiffness are estimates: stage files carry neither"}, {}
     if "bush" in n:
         return "bush", None, extra
     if n.startswith(("tree", "trunk")):
@@ -263,8 +269,102 @@ def water_section(stage: Stage) -> dict | None:
     return {"bodies": bodies}
 
 
-def environment_section(stage: Stage, base_letter: str | None, variants: list[str]) -> dict | None:
+def audio_section(stage: Stage) -> dict | None:
+    """Sound spheres of the `.dls`: a position and a radius word, firing an event of the game's own sound banks. The
+    event is not in the stage files, so each emitter has no `sound` and an `x_rbr` block (spec 8.6 'engine sound events')."""
+    spheres = stage.x_rbr.get("sound_spheres") or []
+    if not spheres:
+        return None
+    return {"emitters": [{"id": f"sound_sphere_{i + 1}", "kind": "other", "position": _vec(sp["position"]),
+                          "max_distance": float(sp["radius_word"]), "loop": False,
+                          "x_rbr": {"sound_sphere": i, "radius_word": sp["radius_word"],
+                                    "note": "event name not stored in the stage files"}}
+                         for i, sp in enumerate(spheres) if sp.get("radius_word", 0) > 0]}
+
+
+_ANIMATED_KINDS = (("CLOCK", "clock"), ("FLAG", "flag"))
+
+
+def animated_objects(stage: Stage, paths: dict) -> list[dict]:
+    """Interactive objects (.lbs chunk 1,6) the game drives by script: start/finish clocks and flags. No keyframes are
+    stored (spec 8.5 'engine-driven objects'): `kind` and the placed prims are given, the rest stays in `x_rbr`."""
+    out = []
+    for name, nodes in sorted(paths.items()):
+        up = name.upper()
+        kind = next((k for key, k in _ANIMATED_KINDS if key in up), None)
+        if kind is None or not nodes:
+            continue
+        out.append({"id": slug(name, "object"), "name": name, "kind": kind,
+                    "target": {"mesh_ref": "visual_extras", "nodes": nodes},
+                    "x_rbr": {"interactive_object": name, "placements": len(nodes),
+                              "note": "moved by the game's script; no keyframes are stored in the stage files"}})
+    return out
+
+
+def _rgb(low: dict, names) -> list[float] | None:
+    try:
+        return [round(float(low[n]), 4) for n in names] if all(n in low for n in names) else None
+    except ValueError:
+        return None
+
+
+def _sun_vector(low: dict) -> list[float] | None:
+    """RBR `SunDir`: the direction the light TRAVELS, in the stage (geometry) frame, Y up. STJ wants the unit vector from
+    the ground towards the sun in world axes (x, y, z up): negate, then swap y and z like every geometry coordinate."""
+    try:
+        x, y, z = (float(v) for v in low["sundir"].replace(",", " ").split()[:3])
+    except (KeyError, ValueError):
+        return None
+    n = math.sqrt(x * x + y * y + z * z)
+    if n < 1e-9:
+        return None
+    return [round(-x / n, 5), round(-z / n, 5), round(-y / n, 5)]
+
+
+def weather_env(w, sky_note: bool = True) -> dict:
+    """The part of `environment` that changes with the weather: sky (model, fog, engine keys) and lighting (a fixed sun
+    direction and colour, ambient colour; spec 8.3 'a fixed lighting rig')."""
+    s = w.settings
+    low = {k.lower(): v for k, v in s.items()}
+    sky: dict = {"model": "engine_default"}
+    fog = _fog(s)
+    if fog:
+        sky["fog"] = {**fog, "_est": True,
+                      "_note": f"RBR linear fog of weather {w.section}: visibility = FogEnd, colour = Fog RGB as stored"}
+    sky["x_rbr"] = {k: s[k] for k in ("SkyboxName", "SkyboxSaturation", "Skybox_Scale", "CloudName", "Cloud_Scale",
+                                      "Superbowl_Scale", "SuperbowlFogStart", "SuperbowlFogEnd", "Turbidity",
+                                      "Rayleigh_Multiplier", "Mie_Multiplier", "Greenstein_Value", "Extinction",
+                                      "Inscattering", "FogStart") if k in s}
+    light: dict = {}
+    sun: dict = {}
+    d = _sun_vector(low)
+    if d:
+        sun["direction"] = d
+    dc = _rgb(low, ("diffusered", "diffusegreen", "diffuseblue"))
+    if dc:
+        sun["color"] = dc
+    if sun:
+        light["sun"] = sun
+    ac = _rgb(low, ("ambientred", "ambientgreen", "ambientblue"))
+    if ac:
+        light["ambient"] = {"color": ac, "intensity": 1.0}
+    rest = {k: s[k] for k in s if k.lower().startswith(("car_", "character_", "particle_", "specular", "terrain_reflectance",
+                                                          "sun_", "sunoffset"))}
+    if rest:
+        light["x_rbr"] = rest
+    if light:
+        light["_note"] = ("RBR TrackSettings: SunDir (fixed sun, converted to STJ axes), Diffuse RGB as the sun colour, Ambient "
+                          "RGB as ambient; the values are the game's own, not converted from its colour space")
+    out = {"sky": sky}
+    if light:
+        out["lighting"] = light
+    return out
+
+
+def environment_section(stage: Stage, base_letter: str | None, variants: list[str], wx_ids: dict | None = None) -> dict | None:
+    """`wx_ids` maps a weather section to the id of the weather variant that patches the base's sky and lighting."""
     env: dict = {}
+    wx_ids = wx_ids or {}
     if stage.origin_offset:
         env["origin_offset"] = _vec(stage.origin_offset)
     letter = stage.info.letter
@@ -281,13 +381,44 @@ def environment_section(stage: Stage, base_letter: str | None, variants: list[st
         if w.letter not in present:
             continue                       # a stage letter that is not in this package: kept in x_rbr only
         row = {"weather": {"condition": weather_condition(w.preset, w.cloud)}, "weight": 1.0,
-               "x_rbr": {"section": w.section}}
-        if w.letter != base_letter:
+               "x_rbr": {"section": w.section, "settings": w.settings}}
+        fog = _fog(w.settings)
+        if fog:
+            row["weather"]["visibility"] = fog["visibility"]
+            row["weather"]["_note"] = "visibility = RBR FogEnd (linear fog: fully fogged there); an estimate"
+            row["weather"]["_est"] = True
+        if w.section in wx_ids:
+            row["variant"] = wx_ids[w.section]
+        elif w.letter != base_letter:
             row["variant"] = variant_id(w.letter)
         opts.append(row)
     if opts:
         env["weather_options"] = opts
+    first = base_weather(stage, base_letter)
+    if first is not None:
+        env.update(weather_env(first))
     return env or None
+
+
+def base_weather(stage: Stage, base_letter: str | None):
+    return next((w for w in stage.weathers if w.letter == base_letter), None) or (stage.weathers[0] if stage.weathers else None)
+
+
+def _fog(settings: dict) -> dict | None:
+    """STJ `sky.fog` (visibility m, linear RGB) from RBR's TrackSettings fog keys; None when fog is off or absent."""
+    low = {k.lower(): v for k, v in settings.items()}
+    try:
+        if low.get("usefog", "true").strip().lower() == "false" or "fogend" not in low:
+            return None
+        end = float(low["fogend"])
+        if end <= 0:
+            return None
+        out = {"visibility": round(end, 1)}
+        if all(k in low for k in ("fogred", "foggreen", "fogblue")):
+            out["color"] = [round(float(low[k]), 4) for k in ("fogred", "foggreen", "fogblue")]
+        return out
+    except ValueError:
+        return None
 
 
 def track_info(stage: Stage) -> dict:
@@ -305,7 +436,8 @@ def track_info(stage: Stage) -> dict:
 
 
 def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = None, extra_lost: list[str] | None = None,
-                   variants: list[dict] | None = None, base_letter: str | None = None, source_files=()) -> dict:
+                   variants: list[dict] | None = None, base_letter: str | None = None, source_files=(),
+                   wx_ids: dict | None = None) -> dict:
     """mesh_files: {"collision": (uri, {state key: (layers, weights)}), "props": (uri, {pid: prim}), ...}"""
     extra_lost = list(extra_lost or [])
     line = stage.line
@@ -316,7 +448,9 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
                     "_note": "RBR stages carry no road width; 3.5 m per side is a placeholder"},
           "chainage": [_r(c) for c in line.chainage]}
     if line.tangents:
-        cl["tangents"] = [_vec(t) for t in line.tangents]
+        cl["tangents_out"] = [_vec(t) for t in line.tangents]
+        if line.tangents_in:
+            cl["tangents_in"] = [_vec(t) for t in line.tangents_in]
     doc["reference"] = {"centerline": cl}
 
     tm = stage.timing
@@ -363,14 +497,28 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
     if stage.edges:
         doc["edges"] = stage.edges
     water = water_section(stage)
+    if mesh_files.get("visual_water"):
+        water = water or {"bodies": []}
+        water["bodies"].append({"id": "visual_water", "kind": "other", "physical": False,
+                                "mesh": {"mesh_ref": mesh_files["visual_water"]},
+                                "_note": "RBR water faces (.lbs chunk 1,8): drawn only; they carry no depth or physics"})
     if water:
         doc["water"] = water
-    env = environment_section(stage, base_letter, [v["letter"] for v in (variants or [])])
+    audio = audio_section(stage)
+    if audio:
+        doc["audio"] = audio
+    anim = animated_objects(stage, mesh_files.get("interactive_paths") or {})
+    if anim:
+        doc["animated_objects"] = anim
+    if mesh_files.get("assets"):
+        doc["assets"] = mesh_files["assets"]
+    env = environment_section(stage, base_letter, [v["letter"] for v in (variants or []) if "letter" in v], wx_ids)
     if env:
         doc["environment"] = env
     if variants:
-        doc["variants"] = [{"id": variant_id(v["letter"]), "name": VARIANT_NAMES.get(v["letter"], v["letter"]),
-                            "kind": VARIANT_KIND.get(v["letter"], "other"), "override": v["override"]}
+        doc["variants"] = [({"id": v["id"], "name": v["name"], "kind": "weather", "override": v["override"]} if "id" in v else
+                            {"id": variant_id(v["letter"]), "name": VARIANT_NAMES.get(v["letter"], v["letter"]),
+                             "kind": VARIANT_KIND.get(v["letter"], "other"), "override": v["override"]})
                            for v in variants]
     if stage.x_btb:
         doc["x_btb"] = stage.x_btb

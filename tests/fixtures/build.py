@@ -242,7 +242,7 @@ def write_col(cells, puddles=(), deep=(), wall=None) -> bytes:
         # layout: [16-byte def][points][root node 0x18][items]
         points_rel = 16
         root_rel = points_rel + len(pts)
-        items_rel = root_rel + 0x18
+        items_rel = 0x18   # relative to the tree root (as in real files)
         node = pf(0, 0, 100, 100) + p32(len(wall["items"]), items_rel)
         wall_blob = p32(16 + len(pts) + 0x18 + len(items), len(wall["points"]), points_rel, root_rel) + pts + node + items
 

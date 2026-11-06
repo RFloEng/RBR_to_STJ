@@ -41,6 +41,45 @@ def preview_material(stage, path: str, colour=(0.55, 0.5, 0.42), roughness=0.9):
     return mat
 
 
+def textured_material(stage, path: str, tex_rel: str, alpha: bool = False, roughness=0.9, alpha_threshold=0.5):
+    """UsdPreviewSurface whose diffuse (and, with `alpha`, cut-out opacity) comes from `tex_rel`, an asset path relative
+    to the mesh layer (`../textures/x.png`), sampled with the mesh's `st` primvar."""
+    Sdf, Usd, UsdGeom, UsdShade, Vt = _pxr()
+    mat = UsdShade.Material.Define(stage, path)
+    sh = UsdShade.Shader.Define(stage, f"{path}/surface")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+    st = UsdShade.Shader.Define(stage, f"{path}/st")
+    st.CreateIdAttr("UsdPrimvarReader_float2")
+    st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    tx = UsdShade.Shader.Define(stage, f"{path}/diffuse")
+    tx.CreateIdAttr("UsdUVTexture")
+    tx.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("../" + tex_rel))
+    tx.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st.ConnectableAPI(), "result")
+    tx.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+    tx.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+    tx.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("sRGB")
+    tx.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tx.ConnectableAPI(), "rgb")
+    if alpha:
+        tx.CreateOutput("a", Sdf.ValueTypeNames.Float)
+        sh.CreateInput("opacity", Sdf.ValueTypeNames.Float).ConnectToSource(tx.ConnectableAPI(), "a")
+        sh.CreateInput("opacityThreshold", Sdf.ValueTypeNames.Float).Set(float(alpha_threshold))
+    mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+    return mat
+
+
+def is_cutout(material) -> bool:
+    """A material with an alpha-test threshold (spec 7.7: a mesh bound to it is a card and must be doubleSided)."""
+    if material is None:
+        return False
+    sh = material.GetPrim().GetChild("surface")
+    if not sh:
+        return False
+    a = sh.GetAttribute("inputs:opacityThreshold")
+    return bool(a and a.Get())
+
+
 def add_mesh(stage, path: str, points, faces, material=None, normals_from_winding: bool = True):
     """A triangle Mesh at `path`. Returns the UsdGeom.Mesh."""
     Sdf, Usd, UsdGeom, UsdShade, Vt = _pxr()
@@ -51,6 +90,8 @@ def add_mesh(stage, path: str, points, faces, material=None, normals_from_windin
     mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
     if material is not None:
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+        if is_cutout(material):
+            mesh.CreateDoubleSidedAttr(True)
     return mesh
 
 
@@ -133,6 +174,14 @@ def _quat_from_columns(ex, ey, ez):
     return (w / n, x / n, y / n, z / n)
 
 
+def _finite(pos, q, sc):
+    """A degenerate matrix can decompose to NaN, which USD text cannot read back: use identity pose / unit scale instead."""
+    import math
+    ok = all(math.isfinite(c) for c in (*pos, *q, *sc))
+    return (pos, q, sc, True) if ok else ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (1.0, 1.0, 1.0), False)
+
+
+
 def decompose_d3d(m, shift=(0.0, 0.0)):
     """A D3D row-major 4x4 -> (position, quaternion wxyz, scale) in the STJ frame, plus a flag for shear/mirror.
 
@@ -157,7 +206,7 @@ def decompose_d3d(m, shift=(0.0, 0.0)):
     return pos, _quat_from_columns(ex, ey, ez), scale, flag
 
 
-def write_visual(path: Path, visuals, track, shift=(0.0, 0.0)):
+def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
     """BTB visual meshes: one prototype Mesh per `.x`, placed by a PointInstancer (not expanded) per object, or by a
     transform when an object has a single placement. Materials are named after the materials.ini sections and carry
     the diffuse texture NAME only (`stj:diffuseTexture`): textures are referenced, never embedded."""
@@ -173,7 +222,10 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0)):
         if key in mats:
             return mats[key]
         sec = track.materials.get(key)
-        m = preview_material(stage, f"/visual/materials/{usd_name(name, 'material')}", colour=(0.6, 0.6, 0.6))
+        exp = exporter.export(sec.diffuse) if (exporter and sec is not None and sec.diffuse) else None
+        mpath = f"/visual/materials/{usd_name(name, 'material')}"
+        m = (textured_material(stage, mpath, exp[0], exp[1]) if exp
+             else preview_material(stage, mpath, colour=(0.6, 0.6, 0.6)))
         prim = m.GetPrim()
         prim.CreateAttribute("stj:sourceName", Sdf.ValueTypeNames.String).Set(name)
         if sec is not None:
@@ -216,9 +268,13 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0)):
                     sub = UsdGeom.Subset.CreateGeomSubset(usd, f"m{mi}", UsdGeom.Tokens.face, Vt.IntArray(idx),
                                                           UsdShade.Tokens.materialBind)
                     UsdShade.MaterialBindingAPI.Apply(sub.GetPrim()).Bind(material(nm))
+                    if is_cutout(material(nm)):
+                        usd.CreateDoubleSidedAttr(True)
         count += 1
         if not many:
             pos, q, sc, flag = decompose_d3d(matrices[0], shift)
+            pos, q, sc, fin = _finite(pos, q, sc)
+            flag += not fin
             flagged += flag
             xf = UsdGeom.Xform(stage.GetPrimAtPath(proto_path))
             xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
@@ -230,6 +286,8 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0)):
             P, Q, S = [], [], []
             for m in matrices:
                 pos, q, sc, flag = decompose_d3d(m, shift)
+                pos, q, sc, fin = _finite(pos, q, sc)
+                flag += not fin
                 flagged += flag
                 P.append(Gf.Vec3f(*pos))
                 Q.append(Gf.Quath(*q))

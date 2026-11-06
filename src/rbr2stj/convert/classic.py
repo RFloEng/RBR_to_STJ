@@ -41,6 +41,38 @@ def _yaw_from_quat(q):
     return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
 
+def _texture_map(ini_bytes: bytes) -> dict:
+    from .. import ini as _ini
+    out: dict[int, str] = {}
+    ti = _ini.find_section(_ini.parse(ini_bytes), "TextureInfo")
+    if ti is not None:
+        for k, v in ti.entries:
+            m = re.fullmatch(r"texture(\d+)", k.lower())
+            if m:
+                out.setdefault(int(m.group(1)), v)
+    return out
+
+
+def _global_sky(stage, sset):
+    """The shared sky / cloud domes every classic stage draws: `Clouds.lbs` and `skyboxes.lbs` in the Maps folder, each
+    with its own `.ini` texture list. All variants are written; the ones the first weather names are visible."""
+    from ..readers import lbs_extras
+    from ..readers.chunks import read_chunks
+    maps = sset.folder.parent if sset.folder.parent.name.lower() == "maps" else sset.folder
+    for stem in ("skyboxes", "Clouds"):
+        f = next((p for p in (maps / f"{stem}.lbs", maps / f"{stem.lower()}.lbs") if p.is_file()), None)
+        if f is None:
+            continue
+        try:
+            items = lbs_extras.parse(read_chunks(f.read_bytes(), f.name)).items
+        except Exception as e:                      # a broken shared file must not stop the stage
+            stage.lost.append(f"{f.name}: not read ({e})")
+            continue
+        ini_p = f.with_suffix(".ini")
+        tex = _texture_map(ini_p.read_bytes()) if ini_p.is_file() else {}
+        stage.sky_files.append((f.name, tex, items))
+
+
 def build_line(points, tangents, distances, lost, diag):
     """Driveline -> Line with chainage shifted to start at 0. Falls back to recomputed arc length when the stored
     distance is not strictly increasing (STJ requires it) and says so."""
@@ -54,10 +86,13 @@ def build_line(points, tangents, distances, lost, diag):
         lost.append("stored driveline distance was not strictly increasing; s was recomputed from the geometry")
         diag["chainage_fallback"] = True
         off = 0.0
-    return Line([tuple(p) for p in points], [tuple(t) for t in tangents], chain, off, [tuple(t) for t in tangents])
+    raw = [tuple(t) for t in tangents]
+    # the game stores one tangent per segment: it starts segment i (tangents_out[i]) and ends it (tangents_in[i + 1])
+    t_in = [raw[0]] + raw[:-1] if raw else raw
+    return Line([tuple(p) for p in points], list(raw), chain, off, raw, t_in)
 
 
-def tangent_check(line: Line, diag):
+def tangent_check(line: Line, diag):  # raw per-segment tangents are checked against the chords
     """Hermite tangents are dP/du over a segment, so they should be about one chord long. reRBR's game code feeds
     the raw values straight into the Hermite formula (ngp/drive_line.rs `hermite_point`), so no scaling is applied;
     this only records the ratio so real data can confirm it."""
@@ -65,7 +100,7 @@ def tangent_check(line: Line, diag):
     for i in range(len(line.points) - 1):
         chord = math.dist(line.points[i], line.points[i + 1])
         if chord > 1e-6:
-            ratios.append(math.dist((0, 0, 0), line.tangents[i]) / chord)
+            ratios.append(math.dist((0, 0, 0), line.tangents_raw[i]) / chord)
     if ratios:
         ratios.sort()
         diag["tangent_to_chord_ratio"] = {"min": round(ratios[0], 3), "median": round(ratios[len(ratios) // 2], 3),
@@ -73,7 +108,7 @@ def tangent_check(line: Line, diag):
 
 
 def chainage_check(line: Line, diag):
-    rl = RefLine(line.points, line.tangents, None)
+    rl = RefLine(line.points, line.tangents, None, line.tangents_in)
     diag["chainage_vs_geometry"] = {
         "stored_length": round(line.chainage[-1], 3), "xy_length": round(rl.xy_length(), 3),
         "length_3d": round(rl.length_3d(), 3)}
@@ -109,7 +144,7 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
 
     tangent_check(line, diag)
     chainage_check(line, diag)
-    ref = RefLine(line.points, line.tangents, line.chainage)
+    ref = RefLine(line.points, line.tangents, line.chainage, line.tangents_in)
     off = line.chainage_offset
 
     # info: RSF Tracks<id>.ini, else the retail name
@@ -155,7 +190,7 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
     if rinfo:
         stage.x_rbr["rsf"] = {k: v for k, v in {"particles": rinfo.particles, "animation_path": rinfo.animation_path,
                                                  "id": rinfo.id}.items() if v is not None}
-        stage.weathers = [Weather(w.section, w.letter, w.cloud_letter, w.preset, w.cloud) for w in rinfo.weathers]
+        stage.weathers = [Weather(w.settings, w.section, w.letter, w.cloud_letter, w.preset, w.cloud) for w in rinfo.weathers]
     if raw["ini"]:
         from .. import ini as _ini
         secs = _ini.parse(raw["ini"])
@@ -166,6 +201,10 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
                 m = re.fullmatch(r"texture(\d+)", k.lower())
                 if m:
                     stage.texture_requests.setdefault(int(m.group(1)), v)
+
+    if opt.textures and not opt.no_geometry:
+        from .. import textures as _tex
+        stage.texture_source = _tex.for_classic(sset.folder, sset.track, sset.letter, _tex.remap_targets(sset.folder))
 
     # spawn from .lbs (2,11)
     if raw["lbs"]:
@@ -179,6 +218,12 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
         if opt.visual and not opt.no_geometry and lb.geometry:
             stage.lbs_visual = lb.geometry
             stage.shift = (ox, oy)
+            from ..readers import lbs_extras
+            from ..readers.chunks import read_chunks
+            ex = lbs_extras.parse(read_chunks(raw["lbs"], ".lbs"))
+            stage.lbs_extras = ex.items
+            stage.x_rbr["object_lane_flags"] = ex.lane_flags
+            _global_sky(stage, sset)
             if lb.skipped_chunks:
                 lost.append(f"{lb.skipped_chunks} render chunk(s) use a vertex layout rbr2stj does not decode")
 
@@ -198,10 +243,14 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
             stage.diagnostics["primary_surface_from_collision"] = hist
     if stage.lbs_visual:
         far = sum(1 for b in stage.lbs_visual for c in b.chunks if c.draw_list == 3)
-        lost.append(f"classic visual geometry: far-LOD render chunks (draw list 3: {far}) are not written; sky and cloud "
-                    "domes, object lanes, reflection and water faces, interactive objects, shadow and specular maps, "
-                    "baked light and textures are not converted (textures are referenced by name only); vertex colour "
-                    "is kept as displayColor")
+        lost.append(f"classic visual geometry: {far} far-LOD render chunks (draw list 3) are written as a `lod` mesh of the "
+                    "near one (the 600 m switch distance is the renderer's documented value, not stored); sky and cloud "
+                    "domes, object lanes, interactive objects, reflection and water faces are converted (water faces as "
+                    "non-physical water); the shadow and specular maps and the RBR shaders are not shaded: the second "
+                    "texture of a chunk is copied and recorded only; baked vertex light is kept as displayColor and "
+                    "marked baked.vertex_colour (never applied); lane sway, vertex words beyond the position, colour and "
+                    "UV, visibility cells and containers, and character animation objects (Lua scripts) are kept in "
+                    "x_rbr or dropped; textures are copied unchanged into textures/ and listed in assets[]")
     else:
         lost.append("classic visual geometry (.lbs render chunks, textures, sky): not converted (no .lbs geometry or "
                     "--no-geometry); only the car start and animation object names are read from the .lbs")
@@ -305,9 +354,31 @@ def _props(t, sh):
     return props
 
 
+def clamp_to_line(stage):
+    """STJ requires every s inside the reference line. A few stages store a note, or the stop, past its end (a note at
+    99000 m, a stop 3.6 m beyond): clamp to the end and keep the stored value in x_rbr.clamped_s."""
+    end = stage.line.chainage[-1]
+    moved = []
+    for n in stage.notes:
+        if n["s"] > end:
+            moved.append({"what": "pacenote", "stored": n["s"], "to": round(end, 3)})
+            n["s"] = round(end, 3)
+    tm = stage.timing
+    for name in ("start", "finish", "stop"):
+        v = getattr(tm, name)
+        if v is not None and v > end:
+            moved.append({"what": f"timing.{name}", "stored": round(v, 3), "to": round(end, 3)})
+            setattr(tm, name, end)
+    tm.splits = [x for x in tm.splits]
+    if moved:
+        stage.x_rbr["clamped_s"] = moved
+        stage.lost.append(f"{len(moved)} s value(s) beyond the end of the driveline were clamped to it (stored values in x_rbr.clamped_s)")
+
+
 def _finish(stage, ref):
     """Pace notes, direction diagnostics and the lost list common to every classic stage."""
     notes, skipped = convert_notes(stage.raw_notes)
     stage.x_rbr["notes_skipped"] = skipped
     stage.diagnostics["pacenotes"] = {"count": len(notes), "direction_vs_geometry": direction_check(notes, ref)}
     stage.notes = notes
+    clamp_to_line(stage)

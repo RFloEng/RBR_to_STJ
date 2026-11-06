@@ -17,7 +17,7 @@ out/<name>/
   <name>_<l>.usda              one override layer per extra variant letter (--all-variants)
 ```
 
-Textures and scenery assets are **referenced by name**, never embedded. Everything converted from game files is marked
+Textures are copied **unchanged** (original `.dds`/`.tga` bytes, no re-encoding or baking) into the package's `textures/` folder (`--no-textures` to skip). Everything converted from game files is marked
 `licence.redistributable: false`, and `_metadata.provenance.converted_from[].lost` lists what was dropped.
 
 ## What it reads

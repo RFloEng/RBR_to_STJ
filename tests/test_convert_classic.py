@@ -39,9 +39,11 @@ def test_line_chainage_and_tangents(stage, classic_stage):
     assert stage.line.chainage[-1] == pytest.approx(classic_stage.length, rel=1e-5)
     assert all(b > a for a, b in zip(stage.line.chainage, stage.line.chainage[1:]))
     assert stage.line.points[0] == pytest.approx(classic_stage.points[0])
-    # open question 1: tangents are dP/du over a segment, about one chord long; they are passed through unscaled
+    # open question 1: tangents are dP/du over a segment, about one chord long; the game's one tangent per segment is written as tangents_out / tangents_in
     r = stage.diagnostics["tangent_to_chord_ratio"]
-    assert 0.8 < r["median"] < 1.25 and stage.line.tangents == stage.line.tangents_raw
+    assert 0.8 < r["median"] < 1.25 and len(stage.line.tangents) == len(stage.line.tangents_raw)
+    n = len(stage.line.points)
+    assert len(stage.line.tangents_in) == n and stage.line.tangents_in[5] == stage.line.tangents[4]
 
 
 def test_open_question_2_chainage_is_compared_with_xy_and_3d_length(stage):
@@ -373,8 +375,8 @@ def test_our_reference_line_matches_stj_core(stage):
     import sys
     sys.path.insert(0, str(stj_tools))
     import stj_core
-    theirs = stj_core.ReferenceLine(stage.line.points, tangents=stage.line.tangents, chainage=stage.line.chainage)
-    ours = RefLine(stage.line.points, stage.line.tangents, stage.line.chainage)
+    theirs = stj_core.ReferenceLine(stage.line.points, tangents_out=stage.line.tangents, tangents_in=stage.line.tangents_in, chainage=stage.line.chainage)
+    ours = RefLine(stage.line.points, stage.line.tangents, stage.line.chainage, stage.line.tangents_in)
     for s in (0.0, 123.4, 250.0, 433.3, 700.0):
         a, b = ours.frame(s), theirs.frame(s)
         assert a[:3] == pytest.approx(b[:3], abs=1e-6) and a[3] == pytest.approx(b[3], abs=1e-6)

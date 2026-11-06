@@ -14,6 +14,7 @@ class Line:
     chainage: list[float]                       # starts at 0
     chainage_offset: float = 0.0                # stored distance of the first point (subtracted from every s)
     tangents_raw: list[tuple[float, float, float]] | None = None
+    tangents_in: list[tuple[float, float, float]] | None = None   # tangents[i] starts segment i, tangents_in[i + 1] ends it
 
 
 @dataclass
@@ -98,6 +99,7 @@ class Fence:
 
 @dataclass
 class Weather:
+    settings: dict   # TrackSettings keys (fog, light, sky, cloud), verbatim
     section: str
     letter: str
     cloud_letter: str | None
@@ -124,6 +126,9 @@ class Stage:
     extra_meshes: list = field(default_factory=list)           # geometry.meshes entries written by other builders
     visual: list = field(default_factory=list)                 # BTB visual objects: {object, mesh, matrices}
     lbs_visual: list = field(default_factory=list)             # classic .lbs (1,0) GeometryBlocks
+    texture_source: object = None                              # textures.TextureSource (None: textures not exported)
+    lbs_extras: list = field(default_factory=list)             # readers.lbs_extras.Item (lanes, sky, interactive, water)
+    sky_files: list = field(default_factory=list)              # [(Path of a global sky .lbs, its Texture<N> map, items)]
     texture_requests: dict = field(default_factory=dict)       # stage .ini Texture<N> -> raw value
     btb_track: object = None                                  # the readers.btb.BtbTrack (materials for visual meshes)
     shift: tuple = (0.0, 0.0)                                  # x/y origin shift applied to every coordinate

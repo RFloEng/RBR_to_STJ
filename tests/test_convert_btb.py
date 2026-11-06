@@ -143,12 +143,12 @@ def test_visual_meshes_are_instanced_not_expanded(pkg):
     assert len(UsdGeom.PointInstancer(cone).GetPositionsAttr().Get()) == 2
     names = [pr.GetPath().pathString for pr in stg.Traverse()]
     assert not any("hidden" in n for n in names)                                                  # Visible=0: absent
-    # LOD in/out kept on the instancer, texture NAME on the material, no texture embedded
+    # LOD in/out kept on the instancer, texture NAME on the material, textures copied byte for byte
     assert ground.GetAttribute("stj:lodOut").Get() == 2679.0
     mats = [pr for pr in stg.Traverse() if pr.GetName().startswith("TexDir")]
     road = next(m for m in mats if m.GetAttribute("stj:sourceName").Get().endswith("road"))
     assert road.GetAttribute("stj:diffuseTexture").Get() == "road.dds" and road.GetAttribute("stj:btbEffect").Get() == "BTB_Diffuse"
-    assert not list(p.folder.rglob("*.dds"))
+    assert sorted(f.name for f in (p.folder / "textures").glob("*.dds")) == ["grass.dds", "road.dds"]   # copied unchanged
 
 
 def test_x_btb_summary_and_lost(pkg):
