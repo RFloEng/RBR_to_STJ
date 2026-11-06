@@ -22,7 +22,7 @@ from ..errors import FormatError, Rbr2StjError
 from ..ir import CollisionMesh, Info, Line, Pose, Prop, Stage, SurfaceState, Timing
 from ..readers import btb
 from . import Options
-from .classic import LIMIT_M, build_line, chainage_check, clamp_to_line, tangent_check
+from .classic import LIMIT_M, build_line, chainage_check, clamp_to_line, tangent_check, _load_physics
 from .pacenotes import RawNote, convert_notes, direction_check
 from .project import RefLine
 from .surfaces import pack_state, top3
@@ -145,6 +145,7 @@ def convert_btb(path, opt: Options | None = None) -> Stage:
     stage = Stage(kind="rbr-btb", info=info, source=f"{t.folder.name}", line=line, timing=timing, raw_notes=raw_notes,
                   lost=lost, diagnostics=diag)
     stage.origin_offset = origin
+    _load_physics(stage, t.folder, opt)
     stage.texture_source = texture_source
     stage.shift = (ox, oy)
     folder = t.folder

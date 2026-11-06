@@ -132,6 +132,7 @@ class Stage:
     texture_requests: dict = field(default_factory=dict)       # stage .ini Texture<N> -> raw value
     btb_track: object = None                                  # the readers.btb.BtbTrack (materials for visual meshes)
     shift: tuple = (0.0, 0.0)                                  # x/y origin shift applied to every coordinate
+    physics: dict | None = None                                # readers.physics_lsp.load(): surface and tyre tables
     x_btb: dict = field(default_factory=dict)
     origin_offset: tuple[float, float, float] | None = None
     sun_direction: tuple[float, float, float] | None = None

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -103,6 +104,30 @@ def _chosen_sky(stage: Stage, fname: str, items):
     return {best} if best else None
 
 
+_VEG = (("tree", re.compile(r"vege|tree|arbol|birch|pine|oak|encina|eucal|poplar|palm", re.I)),
+        ("bush", re.compile(r"bush|arbust|shrub|hedge", re.I)),
+        ("grass", re.compile(r"grass|hierba|pasto|cesped|weed|fern|flower", re.I)))
+
+
+def _first_material(item) -> str:
+    names = item["mesh"].material_names
+    return names[0] if names else ""
+
+
+def _vegetation_class(item, track) -> str | None:
+    """STJ prototype class (tree / bush / grass) from the material and texture names of a BTB object, or None.
+    Names are all BTB carries: there is no vegetation flag in the format."""
+    name = _first_material(item)
+    if not name:
+        return None
+    sec = track.materials.get(name.lower()) if track is not None else None
+    text = f"{name} {getattr(sec, 'diffuse', '') or ''}"
+    for cls, rx in _VEG:
+        if rx.search(text):
+            return cls
+    return None
+
+
 def _asset_manifest(folder: Path, rels: list[str], stage: Stage) -> list[dict]:
     """`assets[]` (spec 5.3): every texture copied into the package, with its hash and the licence it came with."""
     import hashlib
@@ -158,11 +183,26 @@ def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tup
             mesh_files["props"] = (rel, prims)
             written.append(folder / rel)
     if stage.visual:
+        veg, rest = [], []
+        for it in stage.visual:
+            cls = _vegetation_class(it, stage.btb_track)
+            (veg if cls and len(it["matrices"]) > 1 else rest).append((it, cls))
         rel = f"meshes/{stem}_visual.usda"
-        info = usd_mesh.write_visual(folder / rel, stage.visual, stage.btb_track, stage.shift, exporter)
+        info = usd_mesh.write_visual(folder / rel, [i for i, _c in rest], stage.btb_track, stage.shift, exporter)
+        info.pop("objects", None)
         stage.diagnostics["visual"] = info
         mesh_files.setdefault("extra", []).append({"id": "visual", "uri": rel, "roles": ["visual"]})
         written.append(folder / rel)
+        if veg:
+            rel = f"meshes/{stem}_vegetation.usda"
+            vinfo = usd_mesh.write_visual(folder / rel, [i for i, _c in veg], stage.btb_track, stage.shift, exporter)
+            objs = vinfo.pop("objects")
+            stage.diagnostics["vegetation"] = vinfo
+            mesh_files.setdefault("extra", []).append({"id": "vegetation", "uri": rel, "roles": ["visual"]})
+            written.append(folder / rel)
+            mesh_files["vegetation"] = [{"class": cls, "name": it["object"].file, "index": it["object"].index,
+                                         "material": _first_material(it), **objs[it["object"].index]}
+                                        for it, cls in veg if it["object"].index in objs]
     if stage.lbs_visual:
         shared = []
         if base and _same(stage, base[0], "lbs", "ini"):

@@ -35,6 +35,7 @@ Each reader's docstring cites the exact note. The answers to the open questions 
 | `.dls` sound spheres | `audio.emitters[]` with no `sound`, `max_distance` = the radius word, `x_rbr` (the event name is not in the stage files) | |
 | `.lbs (1,6)` objects named *CLOCK* / *FLAG* | `animated_objects[]` `kind` clock / flag, `target` = the placed prims, no `time_range`, `x_rbr` | the game's script moves them |
 | copied textures | `assets[]` `{id, uri, role: texture, sha256, licence.redistributable: false, source}` | |
+| `Physics/physics.lsp` surface rows + `Physics/*/tyres.lsp` | `surfaces.reference_mu` and `surfaces.library[].by_tyre_class.<class>.mu.peak`, `roughness.sinusoid` | surface `Type` (0 other, 1 gravel, 2 tarmac, 3 snow, 4 dirt, 5 grass) picks each tyre's `SFric_T<Type>`; tyre types map tarmac_dry to road, tarmac_intermediate to intermediate, tarmac_wet to wet, gravel_dry to gravel, snow to snow (gravel_intermediate / gravel_wet only in `surfaces.x_rbr.tyre_types`); `reference_mu` = the tarmac group (STJ-REF); `BumpAmplitude` / `1/BumpFrequency` = sinusoid amplitude / wavelength (`_est`); every raw row in `library[].x_rbr.physics`. Found next to `Maps` / `RX_CONTENT`, or `--physics <folder>` |
 | animation triggers | `x_rbr.triggers[] {object, s, lead}` | also plain triggers, named triggers, sound spheres, animation objects (name, ids, script names) |
 | `.lbs (2,11)` / BTB `spawn.ini` | `race.spawns[start].pose` | |
 | RSF `Tracks<id>.ini` | `track_info` (name, `primary_surface`, `length`, country), author | `Surface` is **0 tarmac, 1 gravel, 2 snow** (see Q-notes) |
@@ -177,7 +178,7 @@ Further format notes found while building:
 
 Every conversion lists these in `_metadata.provenance.converted_from[].lost`; stage-specific lines are appended.
 
-- Grip and all tyre physics (they live in NGP/`physics.lsp`); surfaces carry class and RBR id only
+- Grip beyond `SFric` per tyre and surface group: the wetness (`WaterFactor`, `WetSlope`) and wear (`WearFtr`) formulas are undocumented, and `myStatic`, `SoilThickness`, `SinkFactor`, `RollingResistance` are one default on 148 of 149 rows, so they stay in `x_rbr` only; car physics and the NGP tyre model are not STJ
 - NGP ruts and deformation state
 - RBR shaders and the exact blend of the two textures (classic: baked vertex colour is kept as `displayColor`, not applied; BTB: effect and
   technique names are kept on the materials); `shadow_N.dat` shadow maps and specular maps are not found in RSF installs

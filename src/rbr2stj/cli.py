@@ -25,6 +25,7 @@ def _common(p: argparse.ArgumentParser):
     p.add_argument("--surface-table", help="JSON file: surface id or name -> STJ surface fields (mf_scaling, mu, ...)")
     p.add_argument("--no-textures", dest="textures", action="store_false",
                    help="do not copy the stage textures (materials then carry the texture name only)")
+    p.add_argument("--physics", help="a Physics folder (physics.lsp and */tyres.lsp) for grip numbers; default: the install's own")
     p.add_argument("--no-geometry", action="store_true", help="skip collision, prop and visual meshes")
     p.add_argument("--mesh-format", choices=["auto", "usda", "usdc"], default="auto",
                    help="mesh layer format (auto: usdc above 50,000 faces)")
@@ -92,7 +93,7 @@ def run_classic(a) -> int:
     from .readers import stage_files
     from .writers.package import write_package
     opt = Options(variant=a.variant, all_variants=a.all_variants, no_geometry=a.no_geometry,
-                  surface_states=a.surface_states, mesh_format=a.mesh_format, textures=a.textures)
+                  surface_states=a.surface_states, mesh_format=a.mesh_format, textures=a.textures, physics=a.physics)
     first = convert_classic(a.path, opt)
     stages = [first]
     if a.all_variants:
@@ -106,7 +107,7 @@ def run_classic(a) -> int:
 def run_btb(a) -> int:
     from .convert.btb import convert_btb
     from .writers.package import write_package
-    opt = Options(no_geometry=a.no_geometry, mesh_format=a.mesh_format, textures=a.textures)
+    opt = Options(no_geometry=a.no_geometry, mesh_format=a.mesh_format, textures=a.textures, physics=a.physics)
     st = convert_btb(a.path, opt)
     pkg = write_package([st], Path(a.out), opt, user_table=_table(a.surface_table), usdz=a.usdz, validate=a.validate)
     return _report(pkg, [st], a.validate)

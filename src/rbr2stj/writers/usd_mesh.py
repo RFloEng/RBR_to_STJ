@@ -240,6 +240,7 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
         return m
 
     count = instances = 0
+    objects: dict = {}                    # object index -> where its prototype and instancer are (for scenery references)
     for item in visuals:
         o, mesh, matrices = item["object"], item["mesh"], item["matrices"]
         base = f"/visual/obj_{o.index}_{usd_name(o.file, 'mesh')}"
@@ -297,10 +298,11 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
             inst.CreateScalesAttr(Vt.Vec3fArray(S))
             inst.CreateProtoIndicesAttr(Vt.IntArray([0] * len(matrices)))
             instances += len(matrices)
+            objects[o.index] = {"proto": f"{proto_path}/mesh", "instancer": f"{base}/instances", "count": len(matrices)}
         holder.CreateAttribute("stj:btbObject", Sdf.ValueTypeNames.Int).Set(o.index)
         if o.lod_in is not None:
             holder.CreateAttribute("stj:lodIn", Sdf.ValueTypeNames.Float).Set(float(o.lod_in))
         if o.lod_out is not None:
             holder.CreateAttribute("stj:lodOut", Sdf.ValueTypeNames.Float).Set(float(o.lod_out))
     stage.GetRootLayer().Save()
-    return {"prototypes": count, "instances": instances, "flagged_matrices": flagged}
+    return {"prototypes": count, "instances": instances, "flagged_matrices": flagged, "objects": objects}

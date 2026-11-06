@@ -62,3 +62,35 @@ def test_clocks_and_flags_are_engine_driven_objects():
     objs = stj_doc.animated_objects(st, {"START_CLOCK": ["/extras/interactive/a_p0"], "BANNER_X": ["/extras/interactive/b_p0"]})
     assert [o["kind"] for o in objs] == ["clock"] and objs[0]["target"]["nodes"] == ["/extras/interactive/a_p0"]
     assert "time_range" not in objs[0] and "x_rbr" in objs[0]
+
+
+def test_physics_tables_give_absolute_mu_per_tyre_class_and_roughness():
+    from rbr2stj.readers import physics_lsp as P
+    surf = P.parse_surfaces('''(("PhysicsEngine"
+  MaterialManager ("surface types"
+Gravel_Fine_Shallow_Dry                 ("Gravel_Fine_Shallow_Dry" ; id 17, rev 42
+                                         myStatic           0.3
+                                         BumpFrequency      0.8
+                                         BumpAmplitude      0.002
+                                         Type               1
+                                         Flags              +HARD +VALID
+)
+''')
+    assert surf[17]["Type"] == 1 and surf[17]["BumpAmplitude"] == 0.002 and surf[17]["Flags"] == ["+HARD", "+VALID"]
+    tyres = P.parse_tyres('''(("(null)"
+ TyreType00      ("(tarmac_dry)"
+   SFric_T0 0.8
+   SFric_T1 0.9
+   SFric_T2 1.0
+ TyreType03      ("(gravel_dry)"
+   SFric_T0 1.0
+   SFric_T1 1.1
+   SFric_T2 0.7
+''')
+    assert [t["name"] for t in tyres] == ["tarmac_dry", "gravel_dry"] and tyres[1]["SFric"] == [1.0, 1.1, 0.7]
+    physics = {"surfaces": surf, "tyres": tyres, "source": "test"}
+    assert stj_doc.reference_mu(physics) == {"road": {"peak": 1.0}, "gravel": {"peak": 0.7}}
+    entry = {}
+    stj_doc._physics_entry(entry, surf[17], physics)
+    assert entry["by_tyre_class"] == {"road": {"mu": {"peak": 0.9}}, "gravel": {"mu": {"peak": 1.1}}}
+    assert entry["roughness"]["sinusoid"] == {"amplitude": 0.002, "wavelength": 1.25}

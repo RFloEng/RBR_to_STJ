@@ -177,6 +177,7 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
     stage = Stage(kind="rbr-classic", info=info, source=f"{sset.stem} ({sset.folder.name})", line=line, timing=timing,
                   raw_notes=raw_notes, lost=lost, diagnostics=diag)
     stage.origin_offset = origin
+    _load_physics(stage, sset.folder, opt)
     stage.file_hashes = {k: _sha(v) for k, v in raw.items() if v is not None}
     stage.x_rbr = {
         "track": sset.stem, "variant": sset.letter, "variants_available": letters, "chainage_offset": off,
@@ -373,6 +374,16 @@ def clamp_to_line(stage):
     if moved:
         stage.x_rbr["clamped_s"] = moved
         stage.lost.append(f"{len(moved)} s value(s) beyond the end of the driveline were clamped to it (stored values in x_rbr.clamped_s)")
+
+
+def _load_physics(stage, folder, opt):
+    """Grip, roughness and tyre tables from the install's Physics folder (plain text), when it can be found and read."""
+    from ..readers import physics_lsp
+    d = physics_lsp.find_dir(folder, opt.physics)
+    stage.physics = physics_lsp.load(d) if d else None
+    if stage.physics is None:
+        stage.lost.append("no readable Physics/physics.lsp was found, so surfaces carry class and RBR id only (no grip numbers); "
+                          "pass --physics <folder> or --surface-table")
 
 
 def _finish(stage, ref):

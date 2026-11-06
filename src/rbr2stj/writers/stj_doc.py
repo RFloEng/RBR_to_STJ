@@ -17,9 +17,10 @@ VERSION = "0.3"
 
 # What every conversion drops (PLAN.md §8). Format-specific lines are added per stage.
 LOST_ALWAYS = [
-    "Grip and all tyre physics: they live in the NGP/physics.lsp data, not in the stage files, so surface "
-    "`mf_scaling`, friction and deformation numbers are absent (surfaces carry class and RBR id only; "
-    "--surface-table can supply numbers)",
+    "Tyre and car physics, and how wetness and wear change grip: surfaces carry each tyre's absolute mu per surface group "
+    "(from Physics/physics.lsp and tyres.lsp when the install is found) and the sinusoidal roughness, but WaterFactor, "
+    "WetSlope, WearFtr, soil and rolling-resistance values stay in x_rbr (no documented formula; most are one default "
+    "value); without the Physics folder surfaces carry class and RBR id only (--surface-table can supply numbers)",
     "NGP ruts and deformation state",
     "Shadow and specular maps and RBR shaders (baked vertex light is kept as displayColor, marked baked.vertex_colour)",
     "Lua character scripts and animations (script names are kept in x_rbr)",
@@ -84,6 +85,57 @@ def metadata(stage: Stage, extra_lost: list[str], source_files: list[str]) -> di
     return meta
 
 
+# RBR tyre type (tyres.lsp TyreTypeNN) -> STJ tyre class. gravel_intermediate and gravel_wet have no honest STJ class
+# (the gravel classes of STJ are dry gravel, snow, mud ...): their numbers stay in surfaces.x_rbr.tyre_types.
+TYRE_CLASS = {0: "road", 1: "intermediate", 2: "wet", 3: "gravel", 6: "snow"}
+TARMAC_GROUP = 2          # surface Type 2: the group STJ-REF (dry clean asphalt) belongs to
+
+
+def _tyre_mu(physics: dict, group: int) -> dict:
+    out = {}
+    for t in physics.get("tyres", []):
+        cls = TYRE_CLASS.get(t["index"])
+        sf = t.get("SFric")
+        if cls and sf and group < len(sf):
+            out[cls] = sf[group]
+    return out
+
+
+def reference_mu(physics: dict | None) -> dict | None:
+    """Each tyre class's absolute mu on the tarmac group = on STJ-REF (spec 6.5)."""
+    if not physics:
+        return None
+    mu = _tyre_mu(physics, TARMAC_GROUP)
+    return {cls: {"peak": v} for cls, v in mu.items()} or None
+
+
+def _physics_entry(entry: dict, row: dict, physics: dict):
+    """Grip and roughness of one surface from physics.lsp / tyres.lsp.
+
+    Mapped: the grip group (`Type`) selects each tyre's `SFric_T<group>`, which is that tyre's absolute mu on the
+    surface (`by_tyre_class.<class>.mu.peak`); `BumpAmplitude` / `BumpFrequency` become the sinusoidal roughness.
+    Not mapped, kept raw in x_rbr: myStatic/myKinetic, SoilThickness, SinkFactor, SoilDensity and RollingResistance (the
+    same default on 148 of 149 rows), WaterFactor and the tyres' WetSlope / WearFtr (the formula that combines them is
+    not documented), CollMyHigh/Low and eHigh/eLow (collision friction and stiffness of solids)."""
+    group = int(row.get("Type", 0))
+    mus = _tyre_mu(physics, group)
+    if mus:
+        entry["by_tyre_class"] = {cls: {"mu": {"peak": v}} for cls, v in mus.items()}
+    amp, freq = row.get("BumpAmplitude"), row.get("BumpFrequency")
+    if isinstance(amp, (int, float)) and isinstance(freq, (int, float)) and amp > 0 and freq > 0:
+        entry["roughness"] = {"sinusoid": {"amplitude": amp, "wavelength": round(1.0 / freq, 4)},
+                              "_est": True, "_note": "BumpFrequency read as cycles per metre"}
+    entry.pop("_est", None)
+    entry["_source"] = (f"grip from {physics.get('source')}: surface group {group} ({_group_name(group)}), "
+                        "each tyre's SFric_T<group>")
+    entry.setdefault("x_rbr", {})["physics"] = {k: v for k, v in row.items() if k != "name"}
+
+
+def _group_name(g: int) -> str:
+    from ..readers import physics_lsp
+    return physics_lsp.GROUPS.get(g, "?")
+
+
 def _surface_library(stage: Stage, user_table: dict | None) -> dict:
     ids = set()
     if stage.collision:
@@ -98,6 +150,9 @@ def _surface_library(stage: Stage, user_table: dict | None) -> dict:
                  "x_rbr": {"id": sid, "name": name}}
         if resp:
             entry["impact"] = {"response": resp}
+        row = (stage.physics or {}).get("surfaces", {}).get(sid)
+        if row:
+            _physics_entry(entry, row, stage.physics)
         if user_table:
             ov = user_table.get(str(sid)) or user_table.get(name) or user_table.get(name.lower())
             if ov:
@@ -482,12 +537,31 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
         uri, names = mesh_files["collision"]
         geometry_meshes.append({"id": "collision", "uri": uri, "roles": ["collision"]})
         surfaces["library"] = _surface_library(stage, user_table)
+        rm = reference_mu(stage.physics)
+        if rm:
+            surfaces["reference_mu"] = rm
+            surfaces["x_rbr"] = {"tyre_types": stage.physics["tyres"], "physics_source": stage.physics["source"]}
         surfaces["maps"] = surface_maps(stage, names, "collision", "Ground")
     if stage.props and "props" in mesh_files:
         uri, prims = mesh_files["props"]
         geometry_meshes.append({"id": "props", "uri": uri, "roles": ["collision"]})
         protos, inst, _ids = prototypes_and_instances(stage, prims, "props")
         doc["scenery"] = {"prototypes": protos, "instances": inst}
+    veg = mesh_files.get("vegetation")
+    if veg:
+        sc = doc.setdefault("scenery", {"prototypes": {}, "instances": []})
+        used: set = set(sc["prototypes"])
+        for v in veg:
+            pid, k = slug(v["name"], "veg"), 2
+            base_id = pid
+            while pid in used:
+                pid, k = f"{base_id}_{k}", k + 1
+            used.add(pid)
+            sc["prototypes"][pid] = {"name": v["name"], "class": v["class"], "collision": "none",
+                                     "mesh": {"mesh_ref": "vegetation", "prim": v["proto"]},
+                                     "x_btb": {"object": v["index"], "material": v["material"]}}
+            sc["instances"].append({"prototype": pid, "usd": {"mesh_ref": "vegetation", "prim": v["instancer"]},
+                                    "_note": f"{v['count']} placements of BTB object {v['index']}, class from the material name"})
     for extra in mesh_files.get("extra", []):
         geometry_meshes.append(extra)
     if geometry_meshes:

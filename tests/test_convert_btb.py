@@ -134,7 +134,12 @@ def test_visual_meshes_are_instanced_not_expanded(pkg):
     assert vis["roles"] == ["visual"]
     stg = Usd.Stage.Open(str(p.folder / vis["uri"]))
     assert UsdGeom.GetStageUpAxis(stg) == "Z"
-    inst = {pr.GetPath().pathString: pr for pr in stg.Traverse() if pr.IsA(UsdGeom.PointInstancer)}
+    veg = next(m for m in d["geometry"]["meshes"] if m["id"] == "vegetation")       # grass-textured objects with many placements
+    vstg = Usd.Stage.Open(str(p.folder / veg["uri"]))
+    assert any(pp["class"] == "grass" for pp in d["scenery"]["prototypes"].values())
+    assert any(i.get("usd", {}).get("mesh_ref") == "vegetation" for i in d["scenery"]["instances"])
+    inst = {pr.GetPath().pathString: pr for st in (stg, vstg) for pr in st.Traverse() if pr.IsA(UsdGeom.PointInstancer)}
+    stg = vstg if any("ground" in k for k in {pr.GetPath().pathString for pr in vstg.Traverse()}) else stg
     ground = next(v for k, v in inst.items() if "ground" in k)
     pi = UsdGeom.PointInstancer(ground)
     pos = pi.GetPositionsAttr().Get()
