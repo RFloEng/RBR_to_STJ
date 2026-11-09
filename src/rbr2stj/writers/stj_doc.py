@@ -565,7 +565,8 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
     for extra in mesh_files.get("extra", []):
         geometry_meshes.append(extra)
     if geometry_meshes:
-        doc["geometry"] = {"meshes": geometry_meshes}
+        # sorted by id: the Blender profile returns mesh collections in name order, so a .blend round trip keeps the document
+        doc["geometry"] = {"meshes": sorted(geometry_meshes, key=lambda m: m.get("id", ""))}
     if surfaces:
         doc["surfaces"] = surfaces
     if stage.edges:
