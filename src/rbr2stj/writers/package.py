@@ -73,6 +73,7 @@ class Package:
     files: list[Path] = field(default_factory=list)
     usdz: Path | None = None
     validation: tuple[int, str] | None = None
+    blend: tuple[int, str, Path | None] | None = None
 
 
 def _mesh_ext(opt: Options, faces: int) -> str:
@@ -284,7 +285,8 @@ def _root_layer(path: Path, mesh_rels: list[str], name: str):
 
 
 def write_package(stages: list[Stage], out: Path, opt: Options | None = None, user_table: dict | None = None,
-                  usdz: bool = False, validate: bool = False) -> Package:
+                  usdz: bool = False, validate: bool = False,
+                  blend: bool = False, blend_background: bool = False) -> Package:
     """stages[0] is the base document; the others become variant override layers."""
     opt = opt or Options()
     base = stages[0]
@@ -355,6 +357,11 @@ def write_package(stages: list[Stage], out: Path, opt: Options | None = None, us
         pkg.usdz = out_z
     if validate:
         pkg.validation = run_validate(root, tools)
+    if blend:
+        from .blend import write_blend
+        pkg.blend = write_blend(root, tools, background=blend_background)
+        if pkg.blend[2]:
+            pkg.files.append(pkg.blend[2])
     return pkg
 
 

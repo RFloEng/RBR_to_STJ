@@ -30,6 +30,10 @@ def _common(p: argparse.ArgumentParser):
     p.add_argument("--mesh-format", choices=["auto", "usda", "usdc"], default="auto",
                    help="mesh layer format (auto: usdc above 50,000 faces)")
     p.add_argument("--usdz", action="store_true", help="also write a single-file .usdz (needs the STJ tools)")
+    p.add_argument("--blend", action="store_true",
+                   help="also write a Blender .blend following the STJ Blender profile (opens Blender 5.2 with its window, "
+                        "saves and closes; needs the STJ tools; BLENDER_EXE overrides the location)")
+    p.add_argument("--blend-background", action="store_true", help="with --blend: run Blender with -b (no window)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--validate", dest="validate", action="store_true", default=True,
                    help="run the STJ validator with --strict afterwards (default; skipped if the STJ tools are missing)")
@@ -76,6 +80,11 @@ def _report(pkg, stages, validate: bool):
     if "pacenotes" in d:
         pn = d["pacenotes"]
         print(f"notes: {pn['count']}; left/right vs geometry {pn['direction_vs_geometry']}")
+    if getattr(pkg, "blend", None):
+        code, text, path = pkg.blend
+        print(f"blend: {path.name if path else 'not written'} (exit {code})" if code != -1 else text)
+        if code > 0 and text:
+            print(text)
     if pkg.validation:
         code, text = pkg.validation
         if code == -1:
@@ -85,7 +94,8 @@ def _report(pkg, stages, validate: bool):
             print(f"validate --strict: exit {code} ({tail})")
             if code:
                 print(text)
-    return 0 if not pkg.validation or pkg.validation[0] in (0, -1) else 1
+    bad = bool(pkg.validation and pkg.validation[0] not in (0, -1)) or bool(getattr(pkg, "blend", None) and pkg.blend[0] > 0)
+    return 1 if bad else 0
 
 
 def run_classic(a) -> int:
@@ -100,7 +110,8 @@ def run_classic(a) -> int:
         for L in first.x_rbr["variants_available"]:
             if L != first.info.letter:
                 stages.append(convert_classic(a.path, Options(**{**opt.__dict__, "variant": L, "all_variants": False})))
-    pkg = write_package(stages, Path(a.out), opt, user_table=_table(a.surface_table), usdz=a.usdz, validate=a.validate)
+    pkg = write_package(stages, Path(a.out), opt, user_table=_table(a.surface_table), usdz=a.usdz, validate=a.validate,
+                        blend=a.blend, blend_background=a.blend_background)
     return _report(pkg, stages, a.validate)
 
 
@@ -109,7 +120,8 @@ def run_btb(a) -> int:
     from .writers.package import write_package
     opt = Options(no_geometry=a.no_geometry, mesh_format=a.mesh_format, textures=a.textures, physics=a.physics)
     st = convert_btb(a.path, opt)
-    pkg = write_package([st], Path(a.out), opt, user_table=_table(a.surface_table), usdz=a.usdz, validate=a.validate)
+    pkg = write_package([st], Path(a.out), opt, user_table=_table(a.surface_table), usdz=a.usdz, validate=a.validate,
+                        blend=a.blend, blend_background=a.blend_background)
     return _report(pkg, [st], a.validate)
 
 

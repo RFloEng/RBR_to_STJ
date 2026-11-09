@@ -70,7 +70,7 @@ rbr2stj info "C:/Games/RBR/Maps/track-54_M.col"
 Options: `--variant M|N|E|O|S`, `--all-variants`, `--surface-states all|default` (nine wear/wetness maps or just
 normal wear at the stage's default wetness), `--surface-table map.json` (adds grip numbers per surface id or name),
 `--no-geometry` (line, timing and notes only), `--mesh-format auto|usda|usdc`, `--usdz` (single-file package, needs the
-STJ tools), `--no-validate`.
+STJ tools), `--blend` (also a Blender `.blend` next to the root layer, built by the STJ Blender profile importer: Blender 5.2 opens with its window, imports, saves and closes; `BLENDER_EXE` sets the location, `--blend-background` adds `-b`), `--no-validate`.
 
 After writing, the converter runs STJ's `validate.py --strict` when it can find the tools and prints the result.
 The exit status is 0 on success, 1 if validation fails and 2 for an input problem.
