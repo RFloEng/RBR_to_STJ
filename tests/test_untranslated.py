@@ -66,3 +66,47 @@ def test_btb_decimal_comma_colour():
     assert _decimal_triplet("0,8627451,0,8627451,0,8627451") == (0.8627451,) * 3
     assert _decimal_triplet("0.5, 0.25, 1") == (0.5, 0.25, 1.0)
     assert _decimal_triplet("nonsense") is None
+
+
+def test_btb_uv_slots_follow_the_effect():
+    from rbr2stj.writers.usd_mesh import btb_uv_slots
+    assert btb_uv_slots("BTB_Diffuse") == {}
+    assert btb_uv_slots("BTB_DiffuseBumpSpecular") == {"bump": 1, "specular": 2}
+    assert btb_uv_slots("BTB_DiffuseBumpSpecularVertLerp") == {"bump": 1, "specular": 2, "lerp": 3}
+    assert btb_uv_slots("BTB_DiffuseMultiplyAddVertLerp") == {"multiplier": 1, "additive": 2, "lerp": 3}
+
+
+def _bits(*floats):
+    return [struct.unpack("<I", struct.pack("<f", f))[0] for f in floats]
+
+
+def test_x_extra_streams_decl_and_fvf():
+    from rbr2stj.readers.xfile import _Obj, _extra_streams
+    nv = 2
+    # DeclData: blend weight (FLOAT1, usage 1), texcoord index 1 (FLOAT2, usage 5), tangent (FLOAT3, usage 6)
+    els = [0, 0, 1, 0, 1, 0, 5, 1, 2, 0, 6, 0]
+    data = _bits(0.25, 0.1, 0.2, 1, 0, 0) + _bits(0.75, 0.3, 0.4, 0, 1, 0)
+    decl = _Obj("DeclData", ints=[3, *els, len(data), *data])
+    # FVFData: dwFVF 0x202 = two further UV sets
+    fdata = _bits(0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2)
+    fvf = _Obj("FVFData", ints=[0x202, len(fdata), *fdata])
+    sets, blend = _extra_streams(_Obj("Mesh", children=[decl, fvf]), nv)
+    assert blend == [0.25, 0.75]
+    assert len(sets) == 3 and [round(c, 2) for c in sets[0][1]] == [0.3, 0.4]      # usage index 1 first (stable order)
+    assert [round(c, 2) for c in sets[1][0]] == [0.5, 0.6]       # FVF set 0 (usage index 1, after the DeclData one)
+    assert [round(c, 2) for c in sets[2][0]] == [0.7, 0.8]       # FVF set 1
+
+
+def test_btb_vertlerp_writes_a_materialx_mix(tmp_path):
+    pytest = __import__("pytest")
+    pytest.importorskip("pxr")
+    from types import SimpleNamespace
+    from pxr import Usd, UsdShade
+    from rbr2stj.writers import usd_mesh
+    stage = usd_mesh.new_stage(tmp_path / "m.usda", "m")
+    mat = usd_mesh.textured_material(stage, "/m/mat", "textures/a.png")
+    sec = SimpleNamespace(effect="BTB_DiffuseVertLerp")
+    usd_mesh._wire_btb_mtlx(stage, mat, sec, {"secondDiffuseTexture": "textures/b.png"}, "textures/a.png")
+    ids = {s.GetPrim().GetName().split("_")[0] for s in (UsdShade.Shader(p) for p in stage.Traverse() if p.GetName() != "mtlx" and "mtlx" in str(p.GetPath()) and p.IsA(UsdShade.Shader))}
+    assert "mix" in ids and "open" in ids
+    assert mat.GetPrim().GetAttribute("outputs:mtlx:surface").GetConnections()

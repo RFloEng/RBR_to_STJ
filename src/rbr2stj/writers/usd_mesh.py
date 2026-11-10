@@ -100,6 +100,106 @@ def add_baked_maps(stage, material, shadow_rel: str | None = None, specular_rel:
         material.GetPrim().CreateAttribute(f"stj:{name}Map", Sdf.ValueTypeNames.String).Set(rel)
 
 
+def btb_uv_slots(effect: str | None) -> dict:
+    """Which UV set (index into the diffuse-first list; `st<n>` on the mesh) each input of a BTB effect reads: after the
+    diffuse set come bump, specular, multiplier, additive, lerp, for the inputs the effect has (reRBR `Effect::uv_slots`)."""
+    name = (effect or "").lower()
+    want = [("bump", "bump" in name), ("specular", "specular" in name), ("multiplier", "multiplyadd" in name),
+            ("additive", "multiplyadd" in name), ("lerp", "vertlerp" in name)]
+    out, nxt = {}, 1
+    for key, on in want:
+        if on:
+            out[key] = nxt
+            nxt += 1
+    return out
+
+
+def _wire_btb_maps(stage, material, sec, files: dict):
+    """Bump (normalTexture) -> `normal`; specular (specularTexture) -> `specularColor` with the specular workflow and a
+    roughness from SpecularPower (Blinn-Phong exponent P -> sqrt(2 / (P + 2))). Each reads its own primvar."""
+    Sdf, Usd, UsdGeom, UsdShade, Vt = _pxr()
+    slots = btb_uv_slots(sec.effect)
+    path = str(material.GetPath())
+    sh = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/surface"))
+    for key, slot, name, space in (("normalTexture", "bump", "normalmap", "raw"), ("specularTexture", "specular", "specmap", "sRGB")):
+        rel = files.get(key)
+        if not rel or slot not in slots:
+            continue
+        st = UsdShade.Shader.Define(stage, f"{path}/st_{name}")
+        st.CreateIdAttr("UsdPrimvarReader_float2")
+        st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set(f"st{slots[slot]}")
+        tx = UsdShade.Shader.Define(stage, f"{path}/{name}")
+        tx.CreateIdAttr("UsdUVTexture")
+        tx.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("../" + rel))
+        tx.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st.ConnectableAPI(), "result")
+        tx.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+        tx.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+        tx.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set(space)
+        tx.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        if key == "normalTexture":
+            tx.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set((2.0, 2.0, 2.0, 1.0))
+            tx.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set((-1.0, -1.0, -1.0, 0.0))
+            sh.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(tx.ConnectableAPI(), "rgb")
+        else:
+            sh.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(1)
+            sh.CreateInput("specularColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tx.ConnectableAPI(), "rgb")
+            power = float(sec.extras.get("SpecularPower", 4.0))
+            sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(round((2.0 / (power + 2.0)) ** 0.5, 4))
+            material.GetPrim().CreateAttribute("stj:roughnessFromSpecularPower", Sdf.ValueTypeNames.Float).Set(power)
+
+
+def _wire_btb_mtlx(stage, material, sec, files: dict, diffuse_rel: str | None):
+    """MaterialX network (`outputs:mtlx:surface`, an OpenPBR surface) next to the UsdPreviewSurface fallback for what that
+    cannot express: the second diffuse of VertLerp (mix by the `stj_blend` primvar) and MultiplyAdd (diffuse * multiplier
+    + additive). Each map reads its own UV set (`st<slot>`). The combination is the reading of the effect names, not a
+    port of the shader, and is flagged as such in `stj:mtlxNote`."""
+    Sdf, Usd, UsdGeom, UsdShade, Vt = _pxr()
+    name = (sec.effect or "").lower()
+    lerp, madd = "vertlerp" in name, "multiplyadd" in name
+    slots = btb_uv_slots(sec.effect)
+    if not diffuse_rel or not ((lerp and files.get("secondDiffuseTexture")) or (madd and files.get("multiplierTexture"))):
+        return
+    path = f"{material.GetPath()}/mtlx"
+    UsdGeom.Scope.Define(stage, path)
+    count = [0]
+
+    def node(nid, outtype, **ins):
+        count[0] += 1
+        sh = UsdShade.Shader.Define(stage, f"{path}/{nid[3:]}_{count[0]}")
+        sh.CreateIdAttr(nid)
+        for key, (typ, val) in ins.items():
+            if isinstance(val, tuple) and val and isinstance(val[0], UsdShade.Shader):
+                sh.CreateInput(key, typ).ConnectToSource(val[0].ConnectableAPI(), val[1])
+            else:
+                sh.CreateInput(key, typ).Set(val)
+        sh.CreateOutput("out", outtype)
+        return (sh, "out")
+
+    def image(rel, var):
+        uv = node("ND_geompropvalue_vector2", Sdf.ValueTypeNames.Float2, geomprop=(Sdf.ValueTypeNames.String, var))
+        img = node("ND_image_color3", Sdf.ValueTypeNames.Color3f, file=(Sdf.ValueTypeNames.Asset, Sdf.AssetPath("../" + rel)),
+                   texcoord=(Sdf.ValueTypeNames.Float2, uv), uaddressmode=(Sdf.ValueTypeNames.String, "periodic"),
+                   vaddressmode=(Sdf.ValueTypeNames.String, "periodic"))
+        img[0].GetInput("file").GetAttr().SetColorSpace("srgb_texture")
+        return img
+
+    C3, F = Sdf.ValueTypeNames.Color3f, Sdf.ValueTypeNames.Float
+    colour = image(diffuse_rel, "st")
+    if lerp and files.get("secondDiffuseTexture"):
+        second = image(files["secondDiffuseTexture"], f"st{slots['lerp']}")
+        weight = node("ND_geompropvalue_float", F, geomprop=(Sdf.ValueTypeNames.String, "stj_blend"))
+        colour = node("ND_mix_color3", C3, bg=(C3, colour), fg=(C3, second), mix=(F, weight))
+    if madd and files.get("multiplierTexture"):
+        colour = node("ND_multiply_color3", C3, in1=(C3, colour), in2=(C3, image(files["multiplierTexture"], f"st{slots['multiplier']}")))
+        if files.get("additiveTexture"):
+            colour = node("ND_add_color3", C3, in1=(C3, colour), in2=(C3, image(files["additiveTexture"], f"st{slots['additive']}")))
+    surf = node("ND_open_pbr_surface_surfaceshader", Sdf.ValueTypeNames.Token, base_color=(C3, colour), specular_roughness=(F, 0.9))
+    UsdShade.Material(material.GetPrim()).CreateSurfaceOutput("mtlx").ConnectToSource(surf[0].ConnectableAPI(), "out")
+    material.GetPrim().CreateAttribute("stj:mtlxNote", Sdf.ValueTypeNames.String).Set(
+        "derived view: " + ("mix(diffuse, secondDiffuse, stj_blend)" if lerp else "diffuse") +
+        (" * multiplier + additive" if madd else "") + "; the combination is inferred from the effect name")
+
+
 def is_cutout(material) -> bool:
     """A material with an alpha-test threshold (spec 7.7: a mesh bound to it is a card and must be doubleSided)."""
     if material is None:
@@ -267,8 +367,10 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
                 prim.CreateAttribute("stj:btbEffect", Sdf.ValueTypeNames.String).Set(sec.effect)
             if sec.technique:
                 prim.CreateAttribute("stj:btbTechnique", Sdf.ValueTypeNames.String).Set(sec.technique)
-            # the other maps of the effect (bump, specular, second diffuse, multiplier, additive): copied and recorded,
-            # not wired - each reads its own UV set (DeclData), which the .x reader does not decode
+            # the other maps of the effect: copied and recorded; bump and specular are also wired (each reads its own
+            # UV set, the primvar st<slot> written on the meshes); second diffuse, multiplier and additive have no
+            # UsdPreviewSurface input and stay recorded
+            files = {}
             for key, val in sec.extras.items():
                 if key == "SpecularPower":
                     prim.CreateAttribute("stj:specularPower", Sdf.ValueTypeNames.Float).Set(float(val))
@@ -280,6 +382,10 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
                     prim.CreateAttribute(attr, Sdf.ValueTypeNames.String).Set(val.replace("\\", "/").rsplit("/", 1)[-1])
                     if ex:
                         prim.CreateAttribute(attr + "File", Sdf.ValueTypeNames.String).Set(ex[0])
+                        files[key] = ex[0]
+            _wire_btb_maps(stage, m, sec, files)
+            if sec.diffuse and exp:
+                _wire_btb_mtlx(stage, m, sec, files, exp[0])
         mats[key] = m
         return m
 
@@ -306,6 +412,12 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
         if mesh.uvs is not None:
             UsdGeom.PrimvarsAPI(usd).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
                                                    UsdGeom.Tokens.vertex).Set(Vt.Vec2fArray([(u, 1.0 - v) for u, v in mesh.uvs]))
+        for k, uvset in enumerate(mesh.extra_uvs, start=1):       # st1, st2 ...: the UV sets after the diffuse one
+            UsdGeom.PrimvarsAPI(usd).CreatePrimvar(f"st{k}", Sdf.ValueTypeNames.TexCoord2fArray,
+                                                   UsdGeom.Tokens.vertex).Set(Vt.Vec2fArray([(u, 1.0 - v) for u, v in uvset]))
+        if mesh.blend:
+            UsdGeom.PrimvarsAPI(usd).CreatePrimvar("stj_blend", Sdf.ValueTypeNames.FloatArray,
+                                                   UsdGeom.Tokens.vertex).Set(Vt.FloatArray(mesh.blend))
         if names and not single_material:
             for mi, nm in enumerate(names):
                 idx = [i for i, fm in enumerate(mesh.face_materials) if fm == mi]

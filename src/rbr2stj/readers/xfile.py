@@ -37,6 +37,8 @@ class Mesh:
     uvs: list[tuple[float, float]] | None                  # one per vertex, or None (no texture coordinates)
     material_names: list[str]                              # texture filenames, one per material
     face_materials: list[int] = field(default_factory=list)  # per triangle
+    extra_uvs: list = field(default_factory=list)          # further UV sets after the diffuse one, in usage-index order
+    blend: list | None = None                              # BLENDWEIGHT per vertex (BTB_*VertLerp effects)
 
 
 @dataclass
@@ -195,7 +197,51 @@ def parse(data: bytes, label: str = ".x") -> Mesh:
                     names.append(tex.strings[0] if tex and tex.strings else "")
             if len(names) < nm:
                 names += [""] * (nm - len(names))
-    return Mesh(verts, tris, uvs, names, face_mats)
+    extra_uvs, blend = _extra_streams(mesh, nv)
+    return Mesh(verts, tris, uvs, names, face_mats, extra_uvs, blend)
+
+
+# D3DDECLTYPE -> width in DWORDs (FLOAT1..FLOAT4 are 1..4; the packed types are 1 or 2)
+_DECL_WIDTH = {0: 1, 1: 2, 2: 3, 3: 4, 4: 1, 5: 1, 6: 1, 7: 2, 8: 1, 9: 1, 10: 2, 11: 2, 12: 2, 13: 1, 14: 1, 15: 1, 16: 2}
+
+
+def _f(word: int) -> float:
+    return struct.unpack("<f", struct.pack("<I", word & 0xFFFFFFFF))[0]
+
+
+def _extra_streams(mesh: _Obj, nv: int):
+    """The extra per-vertex streams of BTB meshes (reRBR crates/rbr-btb scene.rs `mesh_of_x`): `DeclData {nElements,
+    VertexElement{Type, Method, Usage, UsageIndex}*, nDWords, data}` holds blend weight (usage 1, FLOAT1), texcoord
+    (usage 5, FLOAT2, with its usage index), tangent (6) and binormal (7); `FVFData {dwFVF, nDWords, data}` holds
+    `(dwFVF & 0xF00) >> 8` further 2-float UV sets per vertex. Returns ([uv sets ordered by usage index], blend|None)."""
+    sets: list[tuple[int, list]] = []
+    blend = None
+    for c in mesh.children:
+        if c.kind == "DeclData" and c.ints:
+            n = c.ints[0]
+            if len(c.ints) < 2 + 4 * n:
+                continue
+            els = [tuple(c.ints[1 + 4 * i:5 + 4 * i]) for i in range(n)]       # (type, method, usage, usage index)
+            nd = c.ints[1 + 4 * n]
+            data = c.ints[2 + 4 * n:2 + 4 * n + nd]
+            widths = [_DECL_WIDTH.get(e[0]) for e in els]
+            if None in widths or not widths or len(data) != sum(widths) * nv:
+                continue
+            stride, off = sum(widths), 0
+            for (ty, _m, usage, uidx), w in zip(els, widths):
+                if usage == 5 and ty == 1:
+                    sets.append((uidx, [(_f(data[v * stride + off]), _f(data[v * stride + off + 1])) for v in range(nv)]))
+                elif usage == 1 and ty == 0:
+                    blend = [_f(data[v * stride + off]) for v in range(nv)]
+                off += w
+        elif c.kind == "FVFData" and len(c.ints) >= 2:
+            k = (c.ints[0] & 0xF00) >> 8
+            data = c.ints[2:2 + c.ints[1]]
+            if k and len(data) == k * 2 * nv:
+                for s in range(k):
+                    sets.append((s + 1, [(_f(data[(v * k + s) * 2]), _f(data[(v * k + s) * 2 + 1])) for v in range(nv)]))
+    sets.sort(key=lambda t: t[0])
+    return [s for _i, s in sets], blend
 
 
 # ── writer used by the test fixtures (kept here so the token numbers live in one file) ─────────

@@ -166,9 +166,11 @@ def convert_btb(path, opt: Options | None = None) -> Stage:
     clamp_to_line(stage)
     diag["pacenotes"] = {"count": len(notes), "direction_vs_geometry": direction_check(notes, ref)}
     lost.append("weather and sky: a BTB stage borrows RBR map 41's sky and weather rows, so STJ has no weather data")
-    lost.append(("BTB shaders: effects and techniques are kept by name; the bump, specular, second-diffuse, multiplier and additive "
-                "textures are copied and recorded on the materials (with SpecularPower and SpecularColor) but not wired, because "
-                "each reads its own UV set (DeclData) and the .x reader decodes only the first"))
+    lost.append(("BTB shaders: effects and techniques are kept by name. The extra UV sets (DeclData, FVFData) are written as "
+                "primvars st1, st2, ... and the blend weight as stj_blend; the bump map is wired to the normal input and the "
+                "specular map to specularColor (roughness from SpecularPower; SpecularColor is recorded, not multiplied). "
+                "The second-diffuse lerp, multiplier and additive maps have no UsdPreviewSurface input: they are copied and "
+                "recorded on the materials only"))
     return stage
 
 
