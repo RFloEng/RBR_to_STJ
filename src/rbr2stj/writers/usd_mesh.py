@@ -195,6 +195,15 @@ def _wire_btb_mtlx(stage, material, sec, files: dict, diffuse_rel: str | None):
             colour = node("ND_add_color3", C3, in1=(C3, colour), in2=(C3, image(files["additiveTexture"], f"st{slots['additive']}")))
     surf = node("ND_open_pbr_surface_surfaceshader", Sdf.ValueTypeNames.Token, base_color=(C3, colour), specular_roughness=(F, 0.9))
     UsdShade.Material(material.GetPrim()).CreateSurfaceOutput("mtlx").ConnectToSource(surf[0].ConnectableAPI(), "out")
+    import json
+    spec = {"diffuse": diffuse_rel}
+    if lerp and files.get("secondDiffuseTexture"):
+        spec.update(second=files["secondDiffuseTexture"], second_uv=f"st{slots['lerp']}")
+    if madd and files.get("multiplierTexture"):
+        spec.update(multiplier=files["multiplierTexture"], multiplier_uv=f"st{slots['multiplier']}")
+        if files.get("additiveTexture"):
+            spec.update(additive=files["additiveTexture"], additive_uv=f"st{slots['additive']}")
+    material.GetPrim().CreateAttribute("stj:mtlxSpec", Sdf.ValueTypeNames.String).Set(json.dumps(spec))
     material.GetPrim().CreateAttribute("stj:mtlxNote", Sdf.ValueTypeNames.String).Set(
         "derived view: " + ("mix(diffuse, secondDiffuse, stj_blend)" if lerp else "diffuse") +
         (" * multiplier + additive" if madd else "") + "; the combination is inferred from the effect name")

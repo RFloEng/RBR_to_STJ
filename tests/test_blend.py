@@ -17,6 +17,6 @@ def test_skipped_without_stj_tools(monkeypatch, tmp_path):
 
 
 def test_driver_is_valid_python_and_imports_without_reset():
-    src = blend._DRIVER.format(tools="t", root="r.usda", out="o.blend", status="s.txt")
+    src = blend._DRIVER.format(tools="t", root="r.usda", out="o.blend", status="s.txt", mtlx={})
     compile(src, "driver", "exec")
     assert "reset=False" in src  # the factory reset would replace the window under the USD import

@@ -19,6 +19,79 @@ _DRIVER = '''import sys, traceback
 import bpy
 sys.path.insert(0, {tools!r})
 
+def apply_mtlx(specs):
+    """The MaterialX view of the BTB second diffuse / multiplier / additive as Blender nodes on Base Color (a derived
+    view: the export never reads it). specs: Blender material name -> dict of diffuse, second, second_uv ... with absolute paths."""
+    def find(name):
+        m = bpy.data.materials.get(name)
+        if m is not None:
+            return m
+        for k in bpy.data.materials:
+            if k.name.split(".")[0] == name:
+                return k
+        return None
+    for name, sp in specs.items():
+        mat = find(name)
+        nt = mat.node_tree if mat is not None and mat.use_nodes else None
+        if nt is None:
+            continue
+        bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        if bsdf is None:
+            continue
+        links = nt.links
+        base = bsdf.inputs["Base Color"]
+        colour = base.links[0].from_socket if base.links else None
+        if colour is None:
+            continue
+        x = bsdf.location.x - 700
+        y = bsdf.location.y - 400
+
+        def image(path, uvname, row, srgb=True):
+            img = nt.nodes.new("ShaderNodeTexImage")
+            img.image = bpy.data.images.load(path, check_existing=True)
+            img.location = (x, y - 300 * row)
+            uv = nt.nodes.new("ShaderNodeUVMap")
+            uv.uv_map = uvname
+            uv.location = (x - 250, y - 300 * row)
+            links.new(uv.outputs["UV"], img.inputs["Vector"])
+            return img.outputs["Color"]
+        row = 0
+        if sp.get("second"):
+            row += 1
+            second = image(sp["second"], sp["second_uv"], row)
+            attr = nt.nodes.new("ShaderNodeAttribute")
+            attr.attribute_type = "GEOMETRY"
+            attr.attribute_name = "stj_blend"
+            attr.location = (x + 100, y + 100)
+            mix = nt.nodes.new("ShaderNodeMix")
+            mix.data_type = "RGBA"
+            mix.location = (x + 350, y)
+            links.new(attr.outputs["Fac"], mix.inputs["Factor"])
+            links.new(colour, mix.inputs["A"])
+            links.new(second, mix.inputs["B"])
+            colour = mix.outputs["Result"]
+        if sp.get("multiplier"):
+            row += 1
+            mul = nt.nodes.new("ShaderNodeMix")
+            mul.data_type = "RGBA"
+            mul.blend_type = "MULTIPLY"
+            mul.location = (x + 550, y)
+            mul.inputs["Factor"].default_value = 1.0
+            links.new(colour, mul.inputs["A"])
+            links.new(image(sp["multiplier"], sp["multiplier_uv"], row), mul.inputs["B"])
+            colour = mul.outputs["Result"]
+            if sp.get("additive"):
+                row += 1
+                add = nt.nodes.new("ShaderNodeMix")
+                add.data_type = "RGBA"
+                add.blend_type = "ADD"
+                add.location = (x + 750, y)
+                add.inputs["Factor"].default_value = 1.0
+                links.new(colour, add.inputs["A"])
+                links.new(image(sp["additive"], sp["additive_uv"], row), add.inputs["B"])
+                colour = add.outputs["Result"]
+        links.new(colour, base)
+
 def run():
     code = 1
     try:
@@ -35,6 +108,7 @@ def run():
                 cut = any(l.to_socket.name == "Alpha" and l.from_node.type == "MATH" for l in nt.links)
                 if cut and getattr(mat, "surface_render_method", None) == "BLENDED":
                     mat.surface_render_method = "DITHERED"
+            apply_mtlx({mtlx!r})
             bpy.ops.wm.save_as_mainfile(filepath={out!r})
             print("wrote", {out!r})
             return 1 if any(x[0] == "ERROR" for x in f) else 0
@@ -75,6 +149,31 @@ def find_blender() -> Path | None:
     return None
 
 
+def collect_mtlx(root: Path) -> dict:
+    """Material name -> MaterialX spec (absolute texture paths) from the `stj:mtlxSpec` attributes of the mesh layers."""
+    try:
+        from pxr import Usd
+    except ImportError:
+        return {}
+    import json
+    out = {}
+    for f in sorted(Path(root).parent.glob("meshes/*.usd*")):
+        try:
+            stage = Usd.Stage.Open(str(f))
+        except Exception:
+            continue
+        for prim in stage.Traverse():
+            a = prim.GetAttribute("stj:mtlxSpec")
+            if not a or not a.Get():
+                continue
+            spec = json.loads(a.Get())
+            for k, v in list(spec.items()):
+                if not k.endswith("_uv"):
+                    spec[k] = str((f.parent.parent / v).resolve())
+            out[prim.GetName()] = spec
+    return out
+
+
 def write_blend(root: Path, tools: Path | None, background: bool = False, blender: Path | None = None,
                 timeout: int = 1800) -> tuple[int, str, Path | None]:
     """Returns (exit code, message, .blend path). Code -1 means skipped (Blender or STJ tools missing)."""
@@ -90,7 +189,7 @@ def write_blend(root: Path, tools: Path | None, background: bool = False, blende
     with tempfile.TemporaryDirectory() as td:
         status = Path(td) / "status.txt"
         drv = Path(td) / "driver.py"
-        drv.write_text(_DRIVER.format(tools=str(bdir), root=str(root), out=str(out), status=str(status)),
+        drv.write_text(_DRIVER.format(tools=str(bdir), root=str(root), out=str(out), status=str(status), mtlx=collect_mtlx(root)),
                        encoding="utf-8")
         cmd = [str(exe)] + (["-b"] if background else []) + ["--factory-startup", "--python", str(drv)]
         try:
