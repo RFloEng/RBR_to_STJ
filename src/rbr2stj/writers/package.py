@@ -250,7 +250,8 @@ def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tup
                     "baked": _baked(stage.diagnostics["visual_lod1"])})
                 written.append(folder / rel)
     if stage.lbs_extras:
-        groups = [("visual_extras", {"lanes", "interactive", "clouds", "sky"}, {}),
+        groups = [("visual_extras", {"lanes", "interactive", "clouds"}, {}),
+                  ("visual_sky_dome", {"sky"}, {}),
                   ("visual_reflection", {"reflection"}, {"reflective": True}),
                   ("visual_water", {"water"}, {})]
         for mid, names, flags in groups:
