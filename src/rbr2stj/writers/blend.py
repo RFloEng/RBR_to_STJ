@@ -26,6 +26,15 @@ def run():
         # reset=False empties the open file: the factory reset would swap the window under the import operator
         def build():
             f = stj_blender.load_into_scene({root!r}, reset=False)
+            # Blender imports a cut-out (opacityThreshold) as Blended, which writes no depth and sorts per object:
+            # a hard alpha test is Dithered
+            for mat in bpy.data.materials:
+                nt = mat.node_tree if mat.use_nodes else None
+                if nt is None:
+                    continue
+                cut = any(l.to_socket.name == "Alpha" and l.from_node.type == "MATH" for l in nt.links)
+                if cut and getattr(mat, "surface_render_method", None) == "BLENDED":
+                    mat.surface_render_method = "DITHERED"
             bpy.ops.wm.save_as_mainfile(filepath={out!r})
             print("wrote", {out!r})
             return 1 if any(x[0] == "ERROR" for x in f) else 0
