@@ -76,6 +76,19 @@ class Package:
     blend: tuple[int, str, Path | None] | None = None
 
 
+def _baked(info: dict) -> dict:
+    """`baked` of a classic visual layer: the vertex light, and the game's shadow and specular maps. A material carries
+    one map of each (a render chunk names its own), so the entry lists the first and all of them in `_uris`."""
+    out = {"vertex_colour": {"primvar": "displayColor", "role": "light"}}
+    for key, label, tc in (("shadow_maps", "shadow_map", "st_shadow"), ("specular_maps", "specular_map", "st_specular")):
+        uris = info.get(key) or []
+        if uris:
+            out[label] = {"uri": uris[0], "texcoord": tc,
+                          "_uris": uris, "_note": "one map per render chunk: each material names its own (stj:shadowMap / "
+                                                  "stj:specularMap); the uri is the first of _uris"}
+    return out
+
+
 def _mesh_ext(opt: Options, faces: int) -> str:
     if opt.mesh_format in ("usda", "usdc"):
         return opt.mesh_format
@@ -215,24 +228,26 @@ def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tup
         else:
             tris = sum(c.triangles for b in stage.lbs_visual for c in b.chunks if c.draw_list != 3)
             rel = f"meshes/{stem}_visual.{_mesh_ext(opt, tris)}"
-            info = lbs_visual.write_lbs_visual(folder / rel, stage.lbs_visual, stage.texture_requests, stage.shift, exporter)
+            info = lbs_visual.write_lbs_visual(folder / rel, stage.lbs_visual, stage.texture_requests, stage.shift, exporter,
+                                               shadow_requests=stage.shadow_requests, specular_requests=stage.specular_requests)
             stage.diagnostics["visual"] = info
             # vertex colour is the game's baked light: said so (spec 7.2 `baked`), never multiplied into the materials
             mesh_files.setdefault("extra", []).append({
                 "id": "visual", "uri": rel, "roles": ["visual"],
-                "baked": {"vertex_colour": {"primvar": "displayColor", "role": "light"}}})
+                "baked": _baked(info)})
             written.append(folder / rel)
             far_tris = sum(c.triangles for b in stage.lbs_visual for c in b.chunks if c.draw_list == 3)
             if far_tris:
                 rel = f"meshes/{stem}_visual_lod1.{_mesh_ext(opt, far_tris)}"
                 stage.diagnostics["visual_lod1"] = lbs_visual.write_lbs_visual(
-                    folder / rel, stage.lbs_visual, stage.texture_requests, stage.shift, exporter, far=True)
+                    folder / rel, stage.lbs_visual, stage.texture_requests, stage.shift, exporter, far=True,
+                    shadow_requests=stage.shadow_requests, specular_requests=stage.specular_requests)
                 mesh_files["extra"].append({
                     "id": "visual_lod1", "uri": rel, "roles": ["lod"],
                     "lod": {"of": "visual", "level": 1, "switch_distance": 600.0,
                             "_est": True, "_note": "RBR draw list 3 (far); the switch distance is the ~600 m the game's "
                                                    "renderer is documented to use, not a stored value"},
-                    "baked": {"vertex_colour": {"primvar": "displayColor", "role": "light"}}})
+                    "baked": _baked(stage.diagnostics["visual_lod1"])})
                 written.append(folder / rel)
     if stage.lbs_extras:
         groups = [("visual_extras", {"lanes", "interactive", "clouds", "sky"}, {}),
@@ -250,6 +265,8 @@ def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tup
             written.append(folder / rel)
             if mid == "visual_extras":
                 mesh_files["interactive_paths"] = paths
+                if info.get("wind"):
+                    mesh_files["wind"] = {**info["wind"], "mesh_ref": mid}
             if mid == "visual_water":
                 mesh_files["visual_water"] = mid
     for fname, tex, items in stage.sky_files:

@@ -11,20 +11,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .usd_mesh import _pxr, add_mesh, is_cutout, new_stage, preview_material, textured_material, usd_name
+from .usd_mesh import _pxr, add_baked_maps, add_mesh, is_cutout, new_stage, preview_material, textured_material, usd_name
 
 
-def write_lbs_visual(path: Path, blocks, texture_requests: dict, shift=(0.0, 0.0), exporter=None, far: bool = False) -> dict:
+def write_lbs_visual(path: Path, blocks, texture_requests: dict, shift=(0.0, 0.0), exporter=None, far: bool = False,
+                     shadow_requests: dict | None = None, specular_requests: dict | None = None) -> dict:
     """`far=False`: the near / always chunks; `far=True`: only the far-LOD chunks (draw list 3), for the `lod` mesh."""
     Sdf, Usd, UsdGeom, UsdShade, Vt = _pxr()
     stage = new_stage(path, "visual")
     UsdGeom.Xform.Define(stage, "/visual/materials")
     mats: dict = {}
+    shadow_requests = shadow_requests or {}
+    specular_requests = specular_requests or {}
+    used = {"shadow": set(), "specular": set()}
 
-    def material(texs):
+    def material(ch):
+        texs = ch.textures
+        key = (tuple(texs), ch.shadow, ch.specular)
         tex_index = texs[0] if texs else None
-        if tuple(texs) in mats:
-            return mats[tuple(texs)]
+        if key in mats:
+            return mats[key]
         raw = texture_requests.get(tex_index, "")
         stem = raw.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
         name = usd_name(stem, f"texture{tex_index}") if stem else f"texture{tex_index}"
@@ -45,7 +51,21 @@ def write_lbs_visual(path: Path, blocks, texture_requests: dict, shift=(0.0, 0.0
             pr.CreateAttribute(f"stj:texture{n}Request", Sdf.ValueTypeNames.String).Set(r2)
             if e2:
                 pr.CreateAttribute(f"stj:texture{n}File", Sdf.ValueTypeNames.String).Set(e2[0])
-        mats[tuple(texs)] = m
+        sh_rel = sp_rel = None
+        if ch.shadow is not None and exporter and shadow_requests.get(ch.shadow):
+            e3 = exporter.export(shadow_requests[ch.shadow])
+            sh_rel = e3[0] if e3 else None
+            pr.CreateAttribute("stj:shadowRequest", Sdf.ValueTypeNames.String).Set(shadow_requests[ch.shadow])
+        if ch.specular is not None and exporter and specular_requests.get(ch.specular):
+            e4 = exporter.export(specular_requests[ch.specular])
+            sp_rel = e4[0] if e4 else None
+            pr.CreateAttribute("stj:specularRequest", Sdf.ValueTypeNames.String).Set(specular_requests[ch.specular])
+        add_baked_maps(stage, m, sh_rel, sp_rel)
+        if sh_rel:
+            used["shadow"].add(sh_rel)
+        if sp_rel:
+            used["specular"].add(sp_rel)
+        mats[key] = m
         return m
 
     meshes = tris_total = 0
@@ -92,11 +112,12 @@ def write_lbs_visual(path: Path, blocks, texture_requests: dict, shift=(0.0, 0.0
             for ci, (ch, idx) in enumerate(subsets):
                 sub = UsdGeom.Subset.CreateGeomSubset(mesh, f"chunk{ci}", UsdGeom.Tokens.face, Vt.IntArray(idx),
                                                       UsdShade.Tokens.materialBind)
-                UsdShade.MaterialBindingAPI.Apply(sub.GetPrim()).Bind(material(ch.textures))
-                if is_cutout(material(ch.textures)):
+                UsdShade.MaterialBindingAPI.Apply(sub.GetPrim()).Bind(material(ch))
+                if is_cutout(material(ch)):
                     mesh.CreateDoubleSidedAttr(True)       # spec 7.7: a card is two-sided
                 sub.GetPrim().CreateAttribute("stj:drawList", Sdf.ValueTypeNames.Int).Set(int(ch.draw_list))
             meshes += 1
             tris_total += len(faces)
     stage.GetRootLayer().Save()
-    return {"meshes": meshes, "triangles": tris_total}
+    return {"meshes": meshes, "triangles": tris_total, "shadow_maps": sorted(used["shadow"]),
+            "specular_maps": sorted(used["specular"])}

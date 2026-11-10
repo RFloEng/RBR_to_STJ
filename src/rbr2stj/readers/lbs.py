@@ -27,6 +27,7 @@ from .chunks import read_chunks
 
 START = (2, 11)
 ANIMATION_OBJECTS = (2, 14)
+VISIBILITY, CONTAINERS, TRACK_VECTORS, VISIBLE_OBJECTS = (2, 10), (2, 15), (2, 16), (2, 18)
 GEOMETRY = (1, 0)
 VIEW_STRIDES = (0x10, 0x18, 0x30, 0x24, 0x3C, 0x20, 0x38, 0x2C, 0x44)
 RENDER_CHUNK_LEN = 0x70
@@ -62,6 +63,8 @@ class RenderChunk:
     triangles: int
     textures: list[int]
     draw_list: int
+    shadow: int | None = None                 # ShadowTexture<N> index (render chunk 0x35 flag, 0x38 index)
+    specular: int | None = None               # SpecularTexture<N> index (0x3c flag, 0x40 index)
 
 
 @dataclass
@@ -87,6 +90,11 @@ class LbsFile:
     start: StartLocation | None = None
     animation_objects: list[AnimationObject] = field(default_factory=list)
     chunk_kinds: list[tuple[int, int]] = field(default_factory=list)
+    # renderer-internal blocks without an STJ slot, kept for x_rbr (geometry frame, meanings partly unestablished)
+    visibility: list = field(default_factory=list)         # (2,10): [(a, b)] two Vec3 per lane
+    containers: list = field(default_factory=list)         # (2,15): [(name, (w0, w1, w2))]
+    track_vectors: list = field(default_factory=list)      # (2,16): two Vec3
+    visible_objects: list = field(default_factory=list)    # (2,18): [(4 Vec3, 3 words)] one per visibility cell
 
 
 def parse(data: bytes) -> LbsFile:
@@ -101,6 +109,21 @@ def parse(data: bytes) -> LbsFile:
         elif k == START:
             r = Reader(ch.data, label=".lbs start")
             out.start = StartLocation(r.f32s(16), r.vec3(), r.vec3())
+        elif k == VISIBILITY:
+            r = Reader(ch.data, label=".lbs visibility")
+            for _ in range(r.u32()):
+                out.visibility.append((r.vec3(), r.vec3()))
+        elif k == CONTAINERS:
+            r = Reader(ch.data, label=".lbs containers")
+            for _ in range(r.u32()):
+                out.containers.append((lossy(r.cstr()), tuple(r.u32s(3))))
+        elif k == TRACK_VECTORS:
+            r = Reader(ch.data, label=".lbs track vectors")
+            out.track_vectors = [r.vec3(), r.vec3()]
+        elif k == VISIBLE_OBJECTS:
+            r = Reader(ch.data, label=".lbs visible objects")
+            while r.remaining() >= 60:
+                out.visible_objects.append(([r.vec3() for _ in range(4)], tuple(r.u32s(3))))
         elif k == ANIMATION_OBJECTS:
             r = Reader(ch.data, label=".lbs animation objects")
             for _ in range(r.u32()):
@@ -167,6 +190,8 @@ def _geometry(payload: bytes, out: LbsFile):
             if views[slot] is None:
                 out.skipped_chunks += 1
                 continue
-            chunks.append(RenderChunk(slot, start, prims, texs, rec[0x6C]))
+            shadow = struct.unpack_from("<I", rec, 0x38)[0] if rec[0x35] else None
+            spec = struct.unpack_from("<I", rec, 0x40)[0] if rec[0x3C] & 1 else None
+            chunks.append(RenderChunk(slot, start, prims, texs, rec[0x6C], shadow, spec))
         r.skip(24)                             # bounds
         out.geometry.append(GeometryBlock(views, chunks))

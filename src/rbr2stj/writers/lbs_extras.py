@@ -12,6 +12,7 @@ in `stj:extra` JSON on the mesh.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from .usd_mesh import _pxr, add_mesh, new_stage, preview_material, textured_material, usd_name
@@ -65,6 +66,8 @@ def write_extras(path: Path, items, texture_requests: dict, shift=(0.0, 0.0), ex
     counts: dict[str, int] = {}
     protos: dict = {}
     n_inst = 0
+    sway_freqs: list[float] = []
+    sway_vertices = 0
     placements: dict[str, list[str]] = {}
     used: set[str] = set()
     for idx, it in enumerate(items):
@@ -97,6 +100,19 @@ def write_extras(path: Path, items, texture_requests: dict, shift=(0.0, 0.0), ex
             pv.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex).Set(Vt.Vec3fArray(cols))
         if it.group == "lanes" and it.kind & 1:
             mesh.CreateDoubleSidedAttr(True)
+        if it.sway and any(s[0] > 0 for s in it.sway):
+            # RLSingleTextureSway: per vertex {sway weight 0..1, frequency, phase}. Frequency and phase are garbage
+            # (uninitialised memory) where the weight is 0, so they are read only where it is positive. Phase is in
+            # radians in the file (0..pi) and STJ counts turns.
+            tau = 2.0 * math.pi
+            w = [min(max(s[0], 0.0), 1.0) if math.isfinite(s[0]) else 0.0 for s in it.sway]
+            ph = [(s[2] / tau) % 1.0 if (s[0] > 0 and math.isfinite(s[2]) and abs(s[2]) < 1e4) else 0.0 for s in it.sway]
+            pv.CreatePrimvar("stj_wind_weight", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex).Set(Vt.FloatArray(w))
+            pv.CreatePrimvar("stj_wind_phase", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex).Set(Vt.FloatArray(ph))
+            for s in it.sway:
+                if s[0] > 0 and math.isfinite(s[1]) and 0 < s[1] < 100:
+                    sway_freqs.append(s[1])
+            sway_vertices += sum(1 for x in w if x > 0)
         prim = mesh.GetPrim()
         prim.CreateAttribute("stj:flags", Sdf.ValueTypeNames.Int).Set(int(it.flags))
         prim.CreateAttribute("stj:kind", Sdf.ValueTypeNames.Int).Set(int(it.kind))
@@ -122,4 +138,7 @@ def write_extras(path: Path, items, texture_requests: dict, shift=(0.0, 0.0), ex
                 placements.setdefault(it.name, []).append(f"{base}_p{vi}")
                 n_inst += 1
     stage.GetRootLayer().Save()
-    return {"items": counts, "interactive_placements": n_inst, "placement_paths": placements}
+    sway_freqs.sort()
+    wind = ({"vertices": sway_vertices, "frequency": sway_freqs[len(sway_freqs) // 2] if sway_freqs else None,
+             "frequencies": sorted({round(f, 3) for f in sway_freqs})} if sway_vertices else None)
+    return {"items": counts, "interactive_placements": n_inst, "placement_paths": placements, "wind": wind}

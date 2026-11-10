@@ -130,8 +130,11 @@ class Stage:
     lbs_extras: list = field(default_factory=list)             # readers.lbs_extras.Item (lanes, sky, interactive, water)
     sky_files: list = field(default_factory=list)              # [(Path of a global sky .lbs, its Texture<N> map, items)]
     texture_requests: dict = field(default_factory=dict)       # stage .ini Texture<N> -> raw value
+    shadow_requests: dict = field(default_factory=dict)        # stage .ini ShadowTexture<N> -> raw value (shadow_N.dat)
+    specular_requests: dict = field(default_factory=dict)      # stage .ini SpecularTexture<N> -> raw value
     btb_track: object = None                                  # the readers.btb.BtbTrack (materials for visual meshes)
     shift: tuple = (0.0, 0.0)                                  # x/y origin shift applied to every coordinate
+    marshals: dict | None = None                              # STJ `marshals` block (posts and vehicles from the .lbs scripted objects)
     physics: dict | None = None                                # readers.physics_lsp.load(): surface and tyre tables
     x_btb: dict = field(default_factory=dict)
     origin_offset: tuple[float, float, float] | None = None

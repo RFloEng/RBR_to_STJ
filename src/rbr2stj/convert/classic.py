@@ -32,6 +32,43 @@ def lbs_to_stj(p):
     return (p[0], p[2], p[1])
 
 
+# .lbs (2,14) scripted objects: the load script names what the object is. Placed as STJ race-control posts and vehicles;
+# birds, deer and the stage's own start/finish scenes are not people or vehicles of the event and stay in x_rbr.
+_POST_KIND = (("spectator", "spectator_point"), ("marshal", "flag_post"), ("media", "other"), ("mechanic", "other"))
+
+
+def _scripted_marshals(objects, sh, x_rbr: dict) -> dict | None:
+    posts, vehicles, counts = [], [], {}
+    for i, o in enumerate(objects):
+        load = o.scripts[0].replace("\\", "/").rsplit("/", 1)[-1].lower() if o.scripts and o.scripts[0] else ""
+        label = None
+        if "rescuechopper" in load:
+            kind, target = "helicopter", vehicles
+        else:
+            label, kind = next(((key, k) for key, k in _POST_KIND if key in load), (None, None))
+            target = posts
+        if kind is None or len(o.vectors) < 2:
+            counts["not_placed:" + (load or o.name)] = counts.get("not_placed:" + (load or o.name), 0) + 1
+            continue
+        pos = sh(lbs_to_stj(o.vectors[0]))
+        yaw = math.radians(o.vectors[1][1])
+        rec = {"id": f"{label or 'helicopter'}_{i + 1}", "kind": kind, "x_rbr": {
+            "object": o.ids[0], "name": o.name, "scripts": [x for x in o.scripts if x], "yaw_deg": round(o.vectors[1][1], 3)}}
+        if target is vehicles:
+            rec["pose"] = {"position": [round(c, 4) for c in pos], "heading": round(math.pi / 2 - yaw, 6)}
+        else:
+            rec["position"] = [round(c, 4) for c in pos]
+        target.append(rec)
+        counts[kind] = counts.get(kind, 0) + 1
+    x_rbr["scripted_objects"] = counts
+    out = {}
+    if posts:
+        out["posts"] = posts
+    if vehicles:
+        out["vehicles"] = vehicles
+    return out or None
+
+
 def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
@@ -202,6 +239,12 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
                 m = re.fullmatch(r"texture(\d+)", k.lower())
                 if m:
                     stage.texture_requests.setdefault(int(m.group(1)), v)
+                m = re.fullmatch(r"shadowtexture(\d+)", k.lower())
+                if m:
+                    stage.shadow_requests.setdefault(int(m.group(1)), v)
+                m = re.fullmatch(r"speculartexture(\d+)", k.lower())
+                if m:
+                    stage.specular_requests.setdefault(int(m.group(1)), v)
 
     if opt.textures and not opt.no_geometry:
         from .. import textures as _tex
@@ -214,6 +257,17 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
             r = lb.start.rotation
             yaw = r[1] if abs(r[0]) < 1e-6 and abs(r[2]) < 1e-6 else math.sqrt(sum(c * c for c in r))
             stage.spawn = Pose(sh(lbs_to_stj(lb.start.position)), math.pi / 2 - yaw)
+        if lb.visibility:
+            stage.x_rbr["visibility_cells"] = {
+                "note": "RBR renderer culling data (.lbs 2,10 and 2,18; cell i is geometry block i and lane i): two vectors per "
+                        "cell in the geometry frame (Y up, left-handed), not converted; STJ has no culling-cell slot",
+                "cells": [{"a": list(a), "b": list(b)} for a, b in lb.visibility],
+                "visible_objects": [{"vectors": [list(v) for v in vs], "words": list(w)} for vs, w in lb.visible_objects]}
+        if lb.containers:
+            stage.x_rbr["containers"] = [{"name": n, "words": list(w)} for n, w in lb.containers]
+        if lb.track_vectors:
+            stage.x_rbr["track_vectors"] = [list(v) for v in lb.track_vectors]
+        stage.marshals = _scripted_marshals(lb.animation_objects, sh, stage.x_rbr)
         stage.x_rbr["animation_objects"] = [
             {"name": o.name, "ids": list(o.ids), "scripts": [x for x in o.scripts if x]} for o in lb.animation_objects]
         if opt.visual and not opt.no_geometry and lb.geometry:
@@ -247,11 +301,17 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
         lost.append(f"classic visual geometry: {far} far-LOD render chunks (draw list 3) are written as a `lod` mesh of the "
                     "near one (the 600 m switch distance is the renderer's documented value, not stored); sky and cloud "
                     "domes, object lanes, interactive objects, reflection and water faces are converted (water faces as "
-                    "non-physical water); the shadow and specular maps and the RBR shaders are not shaded: the second "
-                    "texture of a chunk is copied and recorded only; baked vertex light is kept as displayColor and "
-                    "marked baked.vertex_colour (never applied); lane sway, vertex words beyond the position, colour and "
-                    "UV, visibility cells and containers, and character animation objects (Lua scripts) are kept in "
-                    "x_rbr or dropped; textures are copied unchanged into textures/ and listed in assets[]")
+                    "non-physical water); shadow maps (shadow_N.dat, written as greyscale PNG with the same texels) and specular maps "
+                    "are carried per material (occlusion and specularColor inputs, `stj:shadowMap` / `stj:specularMap`) and "
+                    "named in `baked`; the RBR shaders themselves (the exact blend of the second texture, the specular "
+                    "power and colour) are not reproduced: the second texture of a chunk is copied and recorded only; baked "
+                    "vertex light is kept as displayColor and marked baked.vertex_colour (never applied); lane sway is "
+                    "carried as per-vertex weight and phase primvars with a scenery wind block (amplitude in metres and "
+                    "unit of the stored frequency are not in the files); visibility cells, containers and track vectors "
+                    "are kept in x_rbr (no STJ slot); scripted objects become marshals posts and vehicles where their "
+                    "load script says what they are (spectators, marshals, media, rescue helicopter), the rest (birds, "
+                    "deer, start and finish scenes) stay in x_rbr; textures are copied unchanged into textures/ and "
+                    "listed in assets[]")
     else:
         lost.append("classic visual geometry (.lbs render chunks, textures, sky): not converted (no .lbs geometry or "
                     "--no-geometry); only the car start and animation object names are read from the .lbs")

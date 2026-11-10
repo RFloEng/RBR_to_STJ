@@ -69,6 +69,37 @@ def textured_material(stage, path: str, tex_rel: str, alpha: bool = False, rough
     return mat
 
 
+def add_baked_maps(stage, material, shadow_rel: str | None = None, specular_rel: str | None = None):
+    """The game's own shadow map and specular map of a material, read through the mesh's `st_shadow` / `st_specular`
+    primvars. The shadow map (its red channel multiplies the lit colour in the game) goes to the `occlusion` input, the
+    specular map to `specularColor` with the specular workflow; the files are also named in `stj:` attributes."""
+    Sdf, Usd, UsdGeom, UsdShade, Vt = _pxr()
+    path = str(material.GetPath())
+    sh = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/surface"))
+    for rel, var, name, out, space in ((shadow_rel, "st_shadow", "shadow", "r", "raw"),
+                                        (specular_rel, "st_specular", "specular", "rgb", "sRGB")):
+        if not rel:
+            continue
+        st = UsdShade.Shader.Define(stage, f"{path}/st_{name}")
+        st.CreateIdAttr("UsdPrimvarReader_float2")
+        st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set(var)
+        tx = UsdShade.Shader.Define(stage, f"{path}/{name}")
+        tx.CreateIdAttr("UsdUVTexture")
+        tx.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("../" + rel))
+        tx.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st.ConnectableAPI(), "result")
+        tx.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+        tx.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+        tx.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set(space)
+        if out == "r":
+            tx.CreateOutput("r", Sdf.ValueTypeNames.Float)
+            sh.CreateInput("occlusion", Sdf.ValueTypeNames.Float).ConnectToSource(tx.ConnectableAPI(), "r")
+        else:
+            tx.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+            sh.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(1)
+            sh.CreateInput("specularColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tx.ConnectableAPI(), "rgb")
+        material.GetPrim().CreateAttribute(f"stj:{name}Map", Sdf.ValueTypeNames.String).Set(rel)
+
+
 def is_cutout(material) -> bool:
     """A material with an alpha-test threshold (spec 7.7: a mesh bound to it is a card and must be doubleSided)."""
     if material is None:
@@ -236,6 +267,19 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
                 prim.CreateAttribute("stj:btbEffect", Sdf.ValueTypeNames.String).Set(sec.effect)
             if sec.technique:
                 prim.CreateAttribute("stj:btbTechnique", Sdf.ValueTypeNames.String).Set(sec.technique)
+            # the other maps of the effect (bump, specular, second diffuse, multiplier, additive): copied and recorded,
+            # not wired - each reads its own UV set (DeclData), which the .x reader does not decode
+            for key, val in sec.extras.items():
+                if key == "SpecularPower":
+                    prim.CreateAttribute("stj:specularPower", Sdf.ValueTypeNames.Float).Set(float(val))
+                elif key == "SpecularColor":
+                    prim.CreateAttribute("stj:specularColor", Sdf.ValueTypeNames.Color3f).Set(tuple(float(c) for c in val))
+                else:
+                    ex = exporter.export(val) if exporter else None
+                    attr = "stj:" + key[0].lower() + key[1:]
+                    prim.CreateAttribute(attr, Sdf.ValueTypeNames.String).Set(val.replace("\\", "/").rsplit("/", 1)[-1])
+                    if ex:
+                        prim.CreateAttribute(attr + "File", Sdf.ValueTypeNames.String).Set(ex[0])
         mats[key] = m
         return m
 

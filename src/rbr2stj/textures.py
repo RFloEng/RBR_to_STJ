@@ -44,7 +44,7 @@ def _build_index(roots: tuple[str, ...], zips: tuple[str, ...], loose_dirs: tupl
     def add(zp, name):
         low = name.replace("\\", "/")
         base = low.rsplit("/", 1)[-1].lower()
-        if base.endswith(IMAGE_EXT):
+        if base.endswith(IMAGE_EXT) or (base.startswith("shadow_") and base.endswith(".dat")):
             idx.setdefault(base, []).append(_Entry(Path(zp) if zp else None, name))
 
     for z in zips:
@@ -136,6 +136,8 @@ class TextureExporter:
         has real transparency, which decides cut-out opacity on the material."""
         from PIL import Image
         data = self.source.read(e)
+        if e.name.lower().endswith(".dat"):
+            return self._convert_shadow(e, data)
         has_alpha = False
         try:
             im = Image.open(io.BytesIO(data))
@@ -155,6 +157,27 @@ class TextureExporter:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         (self.out_dir / f"{name}.{ext}").write_bytes(data)
         return (f"textures/{name}.{ext}", has_alpha)
+
+    def _convert_shadow(self, e: _Entry, data: bytes):
+        """`shadow_N.dat` (u32 width, u32 height, L8 texels: the game's shadow map) -> a greyscale PNG with the same
+        texels. A change of container only; no texel is touched."""
+        import struct
+        from PIL import Image
+        w, h = struct.unpack_from("<II", data)
+        if w * h + 8 > len(data) or not (0 < w <= 16384 and 0 < h <= 16384):
+            raise ValueError(f"shadow map header {w}x{h} does not fit {len(data)} bytes")
+        orig = e.name.replace("\\", "/").rsplit("/", 1)[-1]
+        stem = slug(orig.rsplit(".", 1)[0])
+        track = slug(e.name.replace("\\", "/").split("/")[0]) if "/" in e.name.replace("\\", "/") else ""
+        base = f"{track}_{stem}" if track else stem
+        ident = (str(e.zip_path), e.name)
+        name, k = base, 2
+        while self._names.get(name, ident) != ident:
+            name, k = f"{base}_{k}", k + 1
+        self._names[name] = ident
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        Image.frombytes("L", (w, h), data[8:8 + w * h]).save(self.out_dir / f"{name}.png", optimize=True)
+        return (f"textures/{name}.png", False)
 
     def summary(self) -> dict:
         return {"exported": sum(1 for v in self.done.values() if v), "missing_or_failed": dict(self.failed)}

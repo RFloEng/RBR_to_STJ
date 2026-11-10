@@ -178,18 +178,25 @@ Further format notes found while building:
 
 Every conversion lists these in `_metadata.provenance.converted_from[].lost`; stage-specific lines are appended.
 
-- Grip beyond `SFric` per tyre and surface group: the wetness (`WaterFactor`, `WetSlope`) and wear (`WearFtr`) formulas are undocumented, and `myStatic`, `SoilThickness`, `SinkFactor`, `RollingResistance` are one default on 148 of 149 rows, so they stay in `x_rbr` only; car physics and the NGP tyre model are not STJ
-- NGP ruts and deformation state
-- RBR shaders and the exact blend of the two textures (classic: baked vertex colour is kept as `displayColor`, not applied; BTB: effect and
-  technique names are kept on the materials); `shadow_N.dat` shadow maps and specular maps are not found in RSF installs
-- Lua character scripts and animations (names only, in `x_rbr`)
+- Tyre wear (`WearFtr`, `WetnessWearFtr`): the factor is `(WearFtr - 1) * wear + 1` on the friction, but STJ has no tread-wear slot, so it stays in `x_rbr`. `myStatic`, `SoilThickness`, `SinkFactor`, `RollingResistance` are one default on 148 of 149 rows (no real soil data), so they stay in `x_rbr` only; car physics and the NGP tyre model are not STJ
+- NGP ruts and deformation state (runtime state, not in the stage files)
+- RBR shaders: classic keeps the baked vertex colour as `displayColor` (not applied); the exact blend of the two textures and the specular power and colour are not reproduced (the second texture is copied and recorded). BTB: effect and technique names are kept; the bump, specular, second-diffuse, multiplier and additive textures are copied and recorded on the materials with `SpecularPower` and `SpecularColor`, but not wired, because each reads its own UV set (`DeclData`), which the `.x` reader does not decode
+- Scripted objects that are not people or vehicles of the event (birds, deer, start and finish scenes), their Lua scripts and animations (names only, in `x_rbr`)
 - Particle systems (file name only)
-- Visibility cells (2,10) and containers (2,15/18); draw lists are kept as `stj:drawList` / far-LOD meshes
-- Classic vertex words past the documented offsets (kept only as the raw stride in `stj:stride`); lane sway parameters
+- Visibility cells (2,10), their visible-object vectors (2,18), containers (2,15) and the track vectors (2,16) are read and kept in `x_rbr` (the second track vector equals `SunDir`); STJ has no culling slot. Draw lists are kept as `stj:drawList` / far-LOD meshes
+- Classic vertex words past the documented offsets (kept only as the raw stride in `stj:stride`)
+- Sound spheres are mapped to emitters whose event is the game's siren (`Audio/Ambient/siren.wav`, played when a replay camera cuts inside the sphere above 70 km/h); the game's other ambient sounds (wind, birds) are not stage data
 - `.col` cells overwritten by a later graft; surface changes inside one triangle (sampled at the corners)
 - Tilt of BTB box colliders; non-uniform scale of classic props (kept raw in `x_rbr`)
 - BTB weather and sky (BTB borrows map 41's rows)
 - Not converted at all: **RSF-encrypted stages** are refused
+
+## Carried since the Blender work began
+
+- **Shadow and specular maps (classic).** A render chunk names its `ShadowTexture<N>` (flag at 0x35, index at 0x38) and `SpecularTexture<N>` (flag 0x3c, index 0x40). `shadow_N.dat` (u32 width, u32 height, L8 texels, inside `track-NN_L_textures.rbz`) is written as a greyscale PNG with the same texels; specular maps are copied as they are. Each material binds its own pair: the shadow map's red channel to `occlusion` (read through the `st_shadow` primvar), the specular map to `specularColor` with the specular workflow (`st_specular`), and both are named in `stj:shadowMap` / `stj:specularMap`. The mesh entry's `baked.shadow_map` / `specular_map` give the first map and list all of them in `_uris`.
+- **Lane sway.** `RLSingleTextureSway` vertices hold {weight 0..1, frequency, phase} at offset 24. Frequency and phase are uninitialised memory where the weight is 0, so they are read only where it is positive. Weight and phase (radians turned into turns) become the primvars `stj_wind_weight` / `stj_wind_phase` on the lane meshes, and a scenery prototype `lane_foliage` carries `wind` with the median stored frequency. The amplitude in metres is a placeholder (`_est`): the shader scale is not in the stage files.
+- **Scripted objects.** The `.lbs` (2,14) load script says what an object is: spectators (`spectator_point`), marshals (`flag_post`), media and mechanics (`other`) become `marshals.posts`; the rescue helicopter becomes `marshals.vehicles`. Birds, deer and the start and finish scenes stay in `x_rbr`.
+- **Wet grip.** The game's formula (reRBR `tyre/surface.rs`, `CTyre::CScratch::BlendTable`) is `SFric_T<g> + WetSlope_T<g> * |WetnessDesign - WaterFactor|`. Each surface's `by_tyre_class.<class>.mu.peak` uses its own `WaterFactor` (0 dry, 0.5, 1 wet) and a new tyre.
 
 ## Estimates and placeholders (all marked `_est`)
 

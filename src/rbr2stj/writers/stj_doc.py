@@ -18,14 +18,16 @@ VERSION = "0.3"
 # What every conversion drops (PLAN.md §8). Format-specific lines are added per stage.
 LOST_ALWAYS = [
     "Tyre and car physics, and how wetness and wear change grip: surfaces carry each tyre's absolute mu per surface group "
-    "(from Physics/physics.lsp and tyres.lsp when the install is found) and the sinusoidal roughness, but WaterFactor, "
-    "WetSlope, WearFtr, soil and rolling-resistance values stay in x_rbr (no documented formula; most are one default "
-    "value); without the Physics folder surfaces carry class and RBR id only (--surface-table can supply numbers)",
+    "(from Physics/physics.lsp and tyres.lsp when the install is found, wetness included: SFric + WetSlope * "
+    "|WetnessDesign - WaterFactor|) and the sinusoidal roughness, but the soil and rolling-resistance values stay in "
+    "x_rbr (one default value on 148 of 149 rows); without the Physics folder surfaces carry class and RBR id only (--surface-table can supply numbers)",
     "NGP ruts and deformation state",
-    "Shadow and specular maps and RBR shaders (baked vertex light is kept as displayColor, marked baked.vertex_colour)",
+    "RBR shaders (shadow and specular maps are carried per material; the shader blend, specular power and colour are not "
+    "reproduced; baked vertex light is kept as displayColor, marked baked.vertex_colour)",
     "Lua character scripts and animations (script names are kept in x_rbr)",
     "Particle systems (the particle file name is kept in x_rbr)",
-    "Visibility cells and containers",
+    "Visibility cells and containers (kept in x_rbr, no STJ slot)",
+    "Tyre wear (WearFtr, WetnessWearFtr): no STJ slot for tread wear; stays in x_rbr",
 ]
 
 TIME_OF_DAY = {"M": "09:00", "E": "18:00", "N": "22:00", "O": "12:00"}
@@ -91,13 +93,27 @@ TYRE_CLASS = {0: "road", 1: "intermediate", 2: "wet", 3: "gravel", 6: "snow"}
 TARMAC_GROUP = 2          # surface Type 2: the group STJ-REF (dry clean asphalt) belongs to
 
 
-def _tyre_mu(physics: dict, group: int) -> dict:
+def tyre_mu(tyre: dict, group: int, water_factor: float = 0.0):
+    """The game's peak friction of a tyre type on a surface group at a surface wetness (`WaterFactor`, 0 dry, 0.5, 1 wet), for
+    a new tyre: `SFric_T<g> + WetSlope_T<g> * |WetnessDesign - WaterFactor|`. That is `surface_friction` of reRBR's
+    rbr-physics (`tyre/surface.rs`, the exe's `CTyre::CScratch::BlendTable` 0x534e70). Tread wear scales it by
+    `(WearFtr_T<g> - 1) * wear + 1`; STJ has no tyre-wear slot, so that stays in x_rbr."""
+    sf, ws = tyre.get("SFric"), tyre.get("WetSlope")
+    if not sf or group >= len(sf):
+        return None
+    mu = sf[group]
+    if ws and group < len(ws) and "WetnessDesign" in tyre:
+        mu += ws[group] * abs(tyre["WetnessDesign"] - water_factor)
+    return round(max(mu, 0.0), 6)
+
+
+def _tyre_mu(physics: dict, group: int, water_factor: float = 0.0) -> dict:
     out = {}
     for t in physics.get("tyres", []):
         cls = TYRE_CLASS.get(t["index"])
-        sf = t.get("SFric")
-        if cls and sf and group < len(sf):
-            out[cls] = sf[group]
+        mu = tyre_mu(t, group, water_factor)
+        if cls and mu is not None:
+            out[cls] = mu
     return out
 
 
@@ -118,7 +134,8 @@ def _physics_entry(entry: dict, row: dict, physics: dict):
     same default on 148 of 149 rows), WaterFactor and the tyres' WetSlope / WearFtr (the formula that combines them is
     not documented), CollMyHigh/Low and eHigh/eLow (collision friction and stiffness of solids)."""
     group = int(row.get("Type", 0))
-    mus = _tyre_mu(physics, group)
+    wf = row.get("WaterFactor")
+    mus = _tyre_mu(physics, group, float(wf) if isinstance(wf, (int, float)) else 0.0)
     if mus:
         entry["by_tyre_class"] = {cls: {"mu": {"peak": v}} for cls, v in mus.items()}
     amp, freq = row.get("BumpAmplitude"), row.get("BumpFrequency")
@@ -127,7 +144,8 @@ def _physics_entry(entry: dict, row: dict, physics: dict):
                               "_est": True, "_note": "BumpFrequency read as cycles per metre"}
     entry.pop("_est", None)
     entry["_source"] = (f"grip from {physics.get('source')}: surface group {group} ({_group_name(group)}), "
-                        "each tyre's SFric_T<group>")
+                        f"mu = SFric_T{group} + WetSlope_T{group} * |WetnessDesign - WaterFactor| per tyre type, "
+                        f"WaterFactor {wf if wf is not None else 0} (new tyre)")
     entry.setdefault("x_rbr", {})["physics"] = {k: v for k, v in row.items() if k != "name"}
 
 
@@ -332,8 +350,12 @@ def audio_section(stage: Stage) -> dict | None:
         return None
     return {"emitters": [{"id": f"sound_sphere_{i + 1}", "kind": "other", "position": _vec(sp["position"]),
                           "max_distance": float(sp["radius_word"]), "loop": False,
-                          "x_rbr": {"sound_sphere": i, "radius_word": sp["radius_word"],
-                                    "note": "event name not stored in the stage files"}}
+                          "x_rbr": {"sound_sphere": i, "radius_word": sp["radius_word"], "event": "siren",
+                                    "sound_file": "Audio/Ambient/siren.wav", "min_speed_kmh": 70,
+                                    "note": "the game's siren zone (E31_5d00, from reRBR notes): it plays when a camera "
+                                            "that does not follow the car cuts to a position inside the sphere while the "
+                                            "car is above 70 km/h, audible from 1 m to 30 m. The event is not named in the "
+                                            "stage files; max_distance is the sphere radius"}}
                          for i, sp in enumerate(spheres) if sp.get("radius_word", 0) > 0]}
 
 
@@ -562,6 +584,19 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
                                      "x_btb": {"object": v["index"], "material": v["material"]}}
             sc["instances"].append({"prototype": pid, "usd": {"mesh_ref": "vegetation", "prim": v["instancer"]},
                                     "_note": f"{v['count']} placements of BTB object {v['index']}, class from the material name"})
+    wind = mesh_files.get("wind")
+    if wind:
+        sc = doc.setdefault("scenery", {"prototypes": {}, "instances": []})
+        sc["prototypes"]["lane_foliage"] = {
+            "name": "Object lanes with sway (grass, bushes and cards)", "class": "other", "collision": "none",
+            "mesh": {"mesh_ref": wind["mesh_ref"], "prim": "/extras/lanes"},
+            "wind": {"amplitude": 0.1, "frequency": wind["frequency"], "weight_primvar": "stj_wind_weight",
+                     "phase_primvar": "stj_wind_phase", "_est": True,
+                     "_note": "weight and phase are read from the RLSingleTextureSway vertices (weight 0..1, phase in "
+                              "radians turned into turns); the frequency is the median of the stored values "
+                              f"{wind['frequencies']} and the amplitude in metres is a placeholder: the game's shader scale "
+                              "is not in the stage files"},
+            "x_rbr": {"sway_vertices": wind["vertices"]}}
     for extra in mesh_files.get("extra", []):
         geometry_meshes.append(extra)
     if geometry_meshes:
@@ -582,6 +617,8 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
     audio = audio_section(stage)
     if audio:
         doc["audio"] = audio
+    if stage.marshals:
+        doc["marshals"] = stage.marshals
     anim = animated_objects(stage, mesh_files.get("interactive_paths") or {})
     if anim:
         doc["animated_objects"] = anim

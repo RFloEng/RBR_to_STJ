@@ -47,6 +47,10 @@ def parse_tyres(text: str) -> list[dict]:
             vals = [_num(v) for k, v in _KV.findall(body) if re.fullmatch(rf"{key}_T\d", k)]
             if vals:
                 row[key] = vals
+        for key in ("WetnessDesign", "WetnessWearFtr"):
+            for k, v in _KV.findall(body):
+                if k == key:
+                    row[key] = _num(v)
         out.append(row)
     return out
 

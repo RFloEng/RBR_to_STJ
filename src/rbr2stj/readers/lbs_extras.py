@@ -48,6 +48,7 @@ class Item:
     colours: list[int | None] = field(default_factory=list)
     uvs: list[tuple[float, float] | None] = field(default_factory=list)
     centre: tuple[float, float, float] | None = None
+    sway: list = field(default_factory=list)     # lanes (stride 36, RLSingleTextureSway): per vertex (amplitude, frequency, phase)
     extra: dict = field(default_factory=dict)    # keys, unknown words, boxes, matrices: kept verbatim for x_rbr
 
 
@@ -63,6 +64,8 @@ def _vertices(raw: bytes, n: int, stride: int, item: Item):
         item.positions.append(struct.unpack_from("<3f", raw, o))
         item.colours.append(struct.unpack_from("<I", raw, o + 12)[0] if stride >= 16 else None)
         item.uvs.append(struct.unpack_from("<2f", raw, o + 16) if stride >= 24 else None)
+        if item.group == "lanes" and stride == 36:       # reRBR notes/formats.md: sway {amplitude, freq, phase} at 24
+            item.sway.append(struct.unpack_from("<3f", raw, o + 24))
 
 
 def _indices(r: Reader, n: int) -> list[int]:

@@ -50,12 +50,51 @@ class BtbObject:
     clone_count: int | None
 
 
+EXTRA_TEXTURES = ("normalTexture", "specularTexture", "secondDiffuseTexture", "multiplierTexture", "additiveTexture")
+
+
+def _decimal_triplet(text: str | None):
+    """`0,8627451,0,8627451,0,8627451` (the author's locale: decimal commas) -> (0.8627451, 0.8627451, 0.8627451)."""
+    if not text:
+        return None
+    parts = [p.strip() for p in text.split(",")]
+    try:
+        if len(parts) == 6:
+            return tuple(float(f"{parts[i]}.{parts[i + 1]}") for i in (0, 2, 4))
+        if len(parts) == 3:
+            return tuple(float(p) for p in parts)
+    except ValueError:
+        pass
+    return None
+
+
+def _material_extras(section) -> dict:
+    out: dict = {}
+    if section is None:
+        return out
+    for key in EXTRA_TEXTURES:
+        v = section.get(key)
+        if v:
+            out[key] = ini.unquote(v)
+    try:
+        if section.get("SpecularPower") is not None:
+            out["SpecularPower"] = float(str(section.get("SpecularPower")).replace(",", "."))
+    except ValueError:
+        pass
+    col = _decimal_triplet(section.get("SpecularColor"))
+    if col:
+        out["SpecularColor"] = col
+    return out
+
+
 @dataclass
 class BtbMaterial:
     name: str
     effect: str | None
     technique: str | None
     diffuse: str | None
+    extras: dict = field(default_factory=dict)    # normalTexture, specularTexture, secondDiffuseTexture, multiplierTexture,
+                                                  # additiveTexture (paths), SpecularPower (float), SpecularColor (r, g, b)
 
 
 @dataclass
@@ -243,12 +282,12 @@ def open_folder(folder: str | Path) -> BtbTrack:
             s = ini.find_section(mats, section)
             t.materials[section.lower()] = BtbMaterial(
                 section, s.get("effectName") if s else None, s.get("techniqueName") if s else None,
-                ini.unquote(s.get("diffuseTexture")) if s else None)
+                ini.unquote(s.get("diffuseTexture")) if s else None, _material_extras(s))
         # .x files name a material by its materials.ini section even when no MAT_<i> lists it
         for s in mats:
             if s.name.lower() not in t.materials and s.get("diffuseTexture") is not None:
                 t.materials[s.name.lower()] = BtbMaterial(s.name, s.get("effectName"), s.get("techniqueName"),
-                                                          ini.unquote(s.get("diffuseTexture")))
+                                                          ini.unquote(s.get("diffuseTexture")), _material_extras(s))
 
     ol = _read_ini(f, "objectlist.ini", required=False)
     head = ini.find_section(ol, "OBJECTS")
