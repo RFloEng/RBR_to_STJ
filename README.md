@@ -1,4 +1,8 @@
-# rbr2stj
+<p align="center">
+  <img src="docs/logo/rbr2stj_logo.svg" alt="rbr2stj: Richard Burns Rally to STJ" width="260">
+</p>
+
+<h1 align="center">rbr2stj</h1>
 
 Convert **Richard Burns Rally** stages to **[STJ — Standard Track JSON](https://github.com/RFloEng/STJ-Standard-Track-Json)**
 v0.3 packages: classic stages (`track-NN_<L>.*`, retail and RallySimFans) and BTB stages
