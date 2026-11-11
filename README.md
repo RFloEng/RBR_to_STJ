@@ -125,3 +125,14 @@ tools/         extract_surface_ids.py (cross-checks the surface table), make_syn
 ## Licence
 
 GPL-3.0-or-later (see `LICENSE`).
+
+## Disclaimer
+
+This is an unofficial, independent project. It is not affiliated with, endorsed by or sponsored by the makers or
+publishers of Richard Burns Rally, by RSF, or by the authors of any stage. "Richard Burns Rally" and other names are
+used only to say which files the tool reads.
+
+The repository contains **no game content**: no meshes, textures, sounds, stages or other assets, and no output of the
+converter. You need your own copy of the game and of every stage you convert. A converted stage is a derived work of the
+original: it carries the rights of its authors, so check the terms of the stage and of the game before sharing it. The
+tool refuses protected files and never decrypts them.
