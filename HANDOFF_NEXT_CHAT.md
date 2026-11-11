@@ -5,7 +5,7 @@ the tool on a machine with Richard Burns Rally.)
 
 ## What this is
 
-`rbr2stj` (Python, Apache-2.0) converts Richard Burns Rally stages, classic (`track-NN_<L>.*`) and BTB
+`rbr2stj` (Python, GPL-3.0-or-later) converts Richard Burns Rally stages, classic (`track-NN_<L>.*`) and BTB
 (`RX_CONTENT/Tracks/<folder>`), to **STJ v0.3** packages (https://github.com/RFloEng/STJ-Standard-Track-Json): a root
 `.usda` with the STJ document in `customLayerData["stj"]`, USD mesh layers, variant override layers, `<name>.stj.json`.
 Formats were learned from reRBR (https://github.com/JodusNodus/rerbr, GPL-3.0) notes and code; **no code is copied**.

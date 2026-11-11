@@ -9,7 +9,7 @@ Decisions already taken (2026-11-05):
 | Decision | Choice |
 |---|---|
 | Language | **Python 3.12+** (3.14 installed here), with `usd-core` (`pxr`) and `jsonschema`, the same stack as STJ's own tools. Rust is not installed. |
-| Licence | **Apache-2.0**, like STJ. reRBR is **GPL-3.0**: read its notes and code to learn the formats, but **do not copy or translate its code**. Write original Python from the format facts. Cite the source as a comment (`# format: reRBR notes/formats.md "Markers"`). |
+| Licence | **GPL-3.0-or-later** (changed from Apache-2.0 on the owner's decision; STJ itself stays Apache-2.0). reRBR is **GPL-3.0**: read its notes and code to learn the formats, but **do not copy or translate its code**. Write original Python from the format facts. Cite the source as a comment (`# format: reRBR notes/formats.md "Markers"`). |
 | Scope v1 | **Classic stages** (retail and RSF community: `track-NN_<L>.{trk,dls,col,mat,fnc,lbs,ini}`) **and BTB stages** (`RX_CONTENT/Tracks/<folder>/`). |
 | Test data | **No RBR install is available.** Every reader is tested on synthetic files that a test-only writer builds from the documented layouts. Real-file tests are skipped unless `RBR_DATA` / `RBR_RSF` point at an install. |
 
@@ -160,7 +160,7 @@ Flag bits → modifiers: `0x1` narrows, `0x2` widens, `0x4` tightens, `0x20` don
 
 ```
 rbr2stj/
-  pyproject.toml            # name rbr2stj, Apache-2.0, deps: usd-core, jsonschema; entry point rbr2stj
+  pyproject.toml            # name rbr2stj, GPL-3.0-or-later, deps: usd-core, jsonschema; entry point rbr2stj
   LICENSE, README.md, .gitignore (reference/, out/, *.pyc)
   src/rbr2stj/
     cli.py                  # rbr2stj classic|btb|info ...

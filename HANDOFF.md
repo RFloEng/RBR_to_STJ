@@ -92,7 +92,7 @@ and come from content you may use but not share.
 
 - Only files you may use. RSF-encrypted files (`01 a0 00 00`) are refused and never decoded; do not try to work around it.
 - Never copy the converted output or game files into a public place or a repo.
-- The project is Apache-2.0; the formats were learned from reRBR's public notes (GPL-3.0) without copying its code.
+- The project is GPL-3.0-or-later; the formats were learned from reRBR's public notes (GPL-3.0) without copying its code.
 
 ## Known soft spots (most likely first failures)
 

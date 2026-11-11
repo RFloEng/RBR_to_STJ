@@ -91,7 +91,7 @@ rbr2stj btb "out/synthetic/btb/Synthetic BTB" -o out/test_btb
   `21 19 19 19`) are refused with a clear message and never decoded. XOR-encoded `.lsp` physics files are out of scope
   and left alone.
 - It never writes into the game folder (a test checks the source folder is untouched).
-- Original code, Apache-2.0. The formats were learned from the public notes of
+- Original code, GPL-3.0-or-later. The formats were learned from the public notes of
   [reRBR](https://github.com/JodusNodus/rerbr) (GPL-3.0); no code from it is used, and each reader cites the note it follows.
 
 ## Tests
@@ -124,4 +124,4 @@ tools/         extract_surface_ids.py (cross-checks the surface table), make_syn
 
 ## Licence
 
-Apache-2.0 (see `LICENSE`).
+GPL-3.0-or-later (see `LICENSE`).
