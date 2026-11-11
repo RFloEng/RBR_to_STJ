@@ -40,7 +40,7 @@ def test_visual_layer_frame_winding_and_materials(tmp_path, stage):
     vis = next(m for m in d["geometry"]["meshes"] if m["id"] == "visual")
     assert vis["roles"] == ["visual"]
     stg = Usd.Stage.Open(str(p.folder / vis["uri"]))
-    mesh = UsdGeom.Mesh(stg.GetPrimAtPath("/visual/block0/view5"))
+    mesh = UsdGeom.Mesh(stg.GetPrimAtPath("/visual/block0/block0_view5"))
     pts = mesh.GetPointsAttr().Get()
     assert [tuple(x) for x in pts][2] == (40.0, 40.0, 0.0)               # lbs (40, 0, 40) -> STJ (x, z, y) = (40, 40, 0)
     idx = mesh.GetFaceVertexIndicesAttr().Get()

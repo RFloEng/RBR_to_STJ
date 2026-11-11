@@ -109,6 +109,11 @@ def run():
                 if cut and getattr(mat, "surface_render_method", None) == "BLENDED":
                     mat.surface_render_method = "DITHERED"
             apply_mtlx({mtlx!r})
+            # the sky domes and cloud layers follow the camera in the game: at the origin they cover the stage, so hide
+            # them by default (data and collections stay; only the visibility changes)
+            for col in bpy.data.collections:
+                if col.name.startswith("STJ::mesh::") and col.name.endswith(("_clouds", "_skyboxes")):
+                    col.hide_viewport = True
             bpy.ops.wm.save_as_mainfile(filepath={out!r})
             print("wrote", {out!r})
             return 1 if any(x[0] == "ERROR" for x in f) else 0

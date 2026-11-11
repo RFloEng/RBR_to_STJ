@@ -114,6 +114,7 @@ class TextureExporter:
     out_dir: Path
     done: dict = field(default_factory=dict)       # raw request -> (rel path from the package root, has_alpha) | None
     failed: dict = field(default_factory=dict)     # raw request -> reason
+    borrowed: dict = field(default_factory=dict)   # raw request -> where it came from, when not the stage's own set
     _names: dict = field(default_factory=dict)     # file name -> source identity
 
     def export(self, raw: str):
@@ -124,6 +125,9 @@ class TextureExporter:
         if e is None:
             self.failed[raw] = "not found in the stage's texture sets"
         else:
+            low = (str(e.zip_path or "") + "/" + e.name).replace("\\", "/").lower()
+            if self.source.prefer and not any(p in low for p in self.source.prefer):
+                self.borrowed[raw] = (e.zip_path.name + ":" if e.zip_path else "") + e.name.replace("\\", "/")
             try:
                 res = self._convert(raw, e)
             except Exception as ex:   # an unreadable DDS variant must not stop the conversion
@@ -180,7 +184,8 @@ class TextureExporter:
         return (f"textures/{name}.png", False)
 
     def summary(self) -> dict:
-        return {"exported": sum(1 for v in self.done.values() if v), "missing_or_failed": dict(self.failed)}
+        return {"exported": sum(1 for v in self.done.values() if v), "missing_or_failed": dict(self.failed),
+                "from_other_sets": dict(self.borrowed)}
 
 
 def for_classic(folder: Path, track: str, letter: str, remap_targets: list[str] | None = None) -> TextureSource:

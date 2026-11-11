@@ -77,6 +77,11 @@ def _report(pkg, stages, validate: bool):
     if pkg.usdz:
         print(f"  {pkg.usdz.name}")
     d = st.diagnostics
+    borrowed = d.get("textures", {}).get("from_other_sets")
+    if borrowed:
+        print(f"textures taken from another stage's set (check them): {len(borrowed)}")
+        for raw, where in sorted(borrowed.items())[:12]:
+            print(f"  {raw.replace(chr(92), '/').rsplit('/', 1)[-1]} <- {where}")
     if "pacenotes" in d:
         pn = d["pacenotes"]
         print(f"notes: {pn['count']}; left/right vs geometry {pn['direction_vs_geometry']}")

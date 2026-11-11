@@ -116,6 +116,25 @@ def test_remap_targets_keep_only_texture_set_names(tmp_path):
     from rbr2stj import textures
     (tmp_path / "TextureFilenameMap9.ini").write_text(
         "; header\n"
-        "track-9_o_textures\damp\normal\a.dds\tdamp\new\a.dds\n"
-        "track-9_o_textures\dry\b.dds\ttrack-13_o_textures\dry\b.dds\n")
+        "track-9_o_textures\\damp\\normal\\a.dds\tdamp\\new\\a.dds\n"
+        "track-9_o_textures\\dry\\b.dds\ttrack-13_o_textures\\dry\\b.dds\n")
     assert textures.remap_targets(tmp_path) == ["track-13_o_textures"]
+
+
+def test_texture_taken_from_another_stage_is_reported(tmp_path):
+    import io
+    import zipfile
+    from PIL import Image
+    from rbr2stj import textures
+    png = io.BytesIO()
+    Image.new("RGB", (2, 2), (9, 9, 9)).save(png, "PNG")
+    own, other = tmp_path / "track-1_o_textures.rbz", tmp_path / "track-2_o_textures.rbz"
+    with zipfile.ZipFile(own, "w") as z:
+        z.writestr("track-1_o_textures/dry/mine.png", png.getvalue())
+    with zipfile.ZipFile(other, "w") as z:
+        z.writestr("track-2_o_textures/dry/theirs.png", png.getvalue())
+    src = textures.TextureSource([own, other], [], ["track-1_o_textures"])
+    exp = textures.TextureExporter(src, tmp_path / "out")
+    assert exp.export("mine.tga") and exp.export("theirs.tga")
+    assert list(exp.borrowed) == ["theirs.tga"]
+    assert "theirs.tga" in exp.summary()["from_other_sets"]

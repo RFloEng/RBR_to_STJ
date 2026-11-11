@@ -269,14 +269,14 @@ def write_collision(path: Path, mesh: CollisionMesh, material_name: str = "Groun
 
 
 def write_props(path: Path, props_by_id: dict[str, Prop]):
-    """One Xform with a Mesh per prototype at /props/<id>/mesh; returns {id: prim path of the Xform}."""
+    """One Xform with a Mesh per prototype at /props/<id>/<id> (the mesh carries the prototype's name); returns {id: prim path of the Xform}."""
     stage = new_stage(path, "props")
     out = {}
     for pid, p in props_by_id.items():
         base = f"/props/{pid}"
         from pxr import UsdGeom
         UsdGeom.Xform.Define(stage, base)
-        add_mesh(stage, f"{base}/mesh", p.vertices, p.faces)
+        add_mesh(stage, f"{base}/{pid}", p.vertices, p.faces)
         out[pid] = base
     stage.GetRootLayer().Save()
     return out
@@ -417,7 +417,8 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
         tris = [(a, c, b) for a, b, c in mesh.triangles]                 # reversed winding (handedness flip)
         names = mesh.material_names
         single_material = len(set(mesh.face_materials)) <= 1
-        usd = add_mesh(stage, f"{proto_path}/mesh", verts, tris, material(names[0]) if names and single_material else None)
+        leaf = usd_name(o.file, "mesh")                                 # the .x name: a DCC shows it instead of "mesh.017"
+        usd = add_mesh(stage, f"{proto_path}/{leaf}", verts, tris, material(names[0]) if names and single_material else None)
         if mesh.uvs is not None:
             UsdGeom.PrimvarsAPI(usd).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
                                                    UsdGeom.Tokens.vertex).Set(Vt.Vec2fArray([(u, 1.0 - v) for u, v in mesh.uvs]))
@@ -463,7 +464,7 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
             inst.CreateScalesAttr(Vt.Vec3fArray(S))
             inst.CreateProtoIndicesAttr(Vt.IntArray([0] * len(matrices)))
             instances += len(matrices)
-            objects[o.index] = {"proto": f"{proto_path}/mesh", "instancer": f"{base}/instances", "count": len(matrices)}
+            objects[o.index] = {"proto": f"{proto_path}/{leaf}", "instancer": f"{base}/instances", "count": len(matrices)}
         holder.CreateAttribute("stj:btbObject", Sdf.ValueTypeNames.Int).Set(o.index)
         if o.lod_in is not None:
             holder.CreateAttribute("stj:lodIn", Sdf.ValueTypeNames.Float).Set(float(o.lod_in))

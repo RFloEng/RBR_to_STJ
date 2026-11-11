@@ -94,7 +94,7 @@ def write_lbs_visual(path: Path, blocks, texture_requests: dict, shift=(0.0, 0.0
             if not faces:
                 continue
             pts = [(p[0] - shift[0], p[2] - shift[1], p[1]) for p in view.positions]
-            mesh = add_mesh(stage, f"/visual/block{bi}/view{slot}", pts, faces)
+            mesh = add_mesh(stage, f"/visual/block{bi}/block{bi}_view{slot}", pts, faces)
             pv = UsdGeom.PrimvarsAPI(mesh)
             if view.uvs and view.uvs[0] is not None:
                 pv.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex).Set(
