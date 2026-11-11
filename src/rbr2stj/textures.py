@@ -205,6 +205,8 @@ def remap_targets(folder: Path) -> list[str]:
             if line.startswith(";") or "\t" not in line:
                 continue
             tgt = line.split("\t")[1].replace("\\", "/").split("/")[0].strip().lower()
-            if tgt and tgt not in out:
+            # only a first component that names a texture set counts: `damp\new\x.dds` is a path inside a set, and as a
+            # "set name" it matched the damp folder of every other stage's archive (Falstone got another stage's plate)
+            if tgt and tgt.endswith("_textures") and tgt not in out:
                 out.append(tgt)
     return out

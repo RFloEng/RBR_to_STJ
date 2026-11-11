@@ -110,3 +110,12 @@ def test_btb_vertlerp_writes_a_materialx_mix(tmp_path):
     ids = {s.GetPrim().GetName().split("_")[0] for s in (UsdShade.Shader(p) for p in stage.Traverse() if p.GetName() != "mtlx" and "mtlx" in str(p.GetPath()) and p.IsA(UsdShade.Shader))}
     assert "mix" in ids and "open" in ids
     assert mat.GetPrim().GetAttribute("outputs:mtlx:surface").GetConnections()
+
+
+def test_remap_targets_keep_only_texture_set_names(tmp_path):
+    from rbr2stj import textures
+    (tmp_path / "TextureFilenameMap9.ini").write_text(
+        "; header\n"
+        "track-9_o_textures\damp\normal\a.dds\tdamp\new\a.dds\n"
+        "track-9_o_textures\dry\b.dds\ttrack-13_o_textures\dry\b.dds\n")
+    assert textures.remap_targets(tmp_path) == ["track-13_o_textures"]
