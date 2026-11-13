@@ -130,11 +130,28 @@ def test_texture_taken_from_another_stage_is_reported(tmp_path):
     Image.new("RGB", (2, 2), (9, 9, 9)).save(png, "PNG")
     own, other = tmp_path / "track-1_o_textures.rbz", tmp_path / "track-2_o_textures.rbz"
     with zipfile.ZipFile(own, "w") as z:
-        z.writestr("track-1_o_textures/dry/mine.png", png.getvalue())
+        z.writestr("track-1_o_textures/dry/mine.dds", png.getvalue())
     with zipfile.ZipFile(other, "w") as z:
-        z.writestr("track-2_o_textures/dry/theirs.png", png.getvalue())
-    src = textures.TextureSource([own, other], [], ["track-1_o_textures"])
+        z.writestr("track-2_o_textures/dry/theirs.dds", png.getvalue())
+    src = textures.TextureSource([own, other], [], ["track-1_o_textures"], base="track-1_o")
     exp = textures.TextureExporter(src, tmp_path / "out")
     assert exp.export("mine.tga") and exp.export("theirs.tga")
     assert list(exp.borrowed) == ["theirs.tga"]
     assert "theirs.tga" in exp.summary()["from_other_sets"]
+
+
+def test_game_path_rules_remap_and_wear(tmp_path):
+    import zipfile
+    from rbr2stj import textures
+    z = tmp_path / "track-5_o_textures.rbz"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("track-5_o_textures/damp/new/road.dds", b"road")          # a ground texture: only damp/new exists
+        zf.writestr("track-5_o_textures/damp/sign.dds", b"sign")
+        zf.writestr("track-5_o_textures/damp/new/moved.dds", b"moved")
+    (tmp_path / "TextureFilenameMap5.ini").write_text(
+        "; c\ntrack-5_o_textures\\dry\\old.dds\tdamp\\new\\moved.dds\n", encoding="latin-1")
+    src = textures.for_classic(tmp_path, "track-5", "O", ground={"road"})
+    assert src.rsf_remap == {"track-5_o_textures/dry/old.dds": "track-5_o_textures/damp/new/moved.dds"}
+    for req, name in (("ROAD.tga", "road.dds"), ("SIGN.tga", "sign.dds"), ("OLD.tga", "moved.dds")):
+        e = src.find(req)
+        assert e is not None and e.via == "path" and e.name.endswith(name), req

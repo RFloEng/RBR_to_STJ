@@ -277,6 +277,7 @@ def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tup
         if sky_exp is not None:
             sky_exp.done, sky_exp._names = exporter.done, exporter._names      # one shared texture folder and cache
             sky_exp.failed = exporter.failed
+            sky_exp.report_borrowed = False
         chosen = _chosen_sky(stage, fname, items)
         stage.diagnostics.setdefault("sky_files", {})[fname] = lbs_extras.write_extras(
             folder / rel, items, tex, (0.0, 0.0), sky_exp,

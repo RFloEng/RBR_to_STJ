@@ -22,6 +22,22 @@ IMAGE_EXT = (".dds", ".tga", ".png", ".jpg", ".jpeg", ".bmp")
 WETNESS_RANK = {"dry": 0, "damp": 1, "wet": 2}
 WEAR_RANK = {"normal": 0, "new": 1, "worn": 2}     # a plate exists per wear state; the unworn default is `normal`
 _INDEX_CACHE: dict[tuple, dict] = {}
+_TINT_ORDER = {"M": "MNEO", "N": "NMEO", "E": "ENMO", "O": "OENM"}
+_WETNESS_ORDER = {"dry": ("dry", "damp", "wet", ""), "damp": ("damp", "wet", "dry", ""), "wet": ("wet", "damp", "dry", "")}
+_WEAR_ORDER = {None: ("", "new", "normal", "worn"), "new": ("new", "normal", "worn", ""),
+               "normal": ("normal", "new", "worn", ""), "worn": ("worn", "normal", "new", "")}
+_SET_NAME = re.compile(r"track-\d+_[mnseo]_textures", re.IGNORECASE)
+
+
+def _member(e) -> str:
+    """Member path of an index entry: inside the zip, or from the `*_textures` folder down for loose files."""
+    name = e.name.replace("\\", "/")
+    if e.zip_path is None:
+        parts = name.split("/")
+        for i in range(len(parts) - 1, -1, -1):
+            if parts[i].lower().endswith("_textures"):
+                return "/".join(parts[i:]).lower()
+    return name.lower()
 
 
 def _keys(raw: str) -> list[str]:
@@ -36,6 +52,7 @@ class _Entry:
     zip_path: Path | None
     name: str                      # path inside the zip, or the file path
     rank: tuple = (9, 9)
+    via: str = "name"            # "path": resolved like the game does; "name": guessed from the base name
 
 
 def _build_index(roots: tuple[str, ...], zips: tuple[str, ...], loose_dirs: tuple[str, ...]) -> dict:
@@ -68,7 +85,12 @@ class TextureSource:
     zips: list[Path] = field(default_factory=list)
     loose_dirs: list[Path] = field(default_factory=list)
     prefer: list[str] = field(default_factory=list)
+    base: str = ""                                  # `track-225_o`: set for a classic stage; turns on the game's path rules
+    ground: set = field(default_factory=set)        # lower-case stems of the `IsGroundTexture` textures
+    rsf_remap: dict = field(default_factory=dict)   # RSF `TextureFilenameMap<id>.ini`, member path -> member path
+    stock_map: dict = field(default_factory=dict)   # `Maps/TextureFilenameMap.dat`
     _idx: dict | None = field(default=None, repr=False)
+    _full: dict | None = field(default=None, repr=False)
     _zf: dict = field(default_factory=dict, repr=False)
 
     def index(self) -> dict:
@@ -79,7 +101,69 @@ class TextureSource:
             self._idx = _INDEX_CACHE[key]
         return self._idx
 
+    # -- the game's own rules (HedgeHog3D with RallySimFans), used when `base` is set -------------------------------
+    def _members(self) -> dict:
+        """Every file by its member path (`track-225_o_textures/damp/new/x.dds`, lower case, forward slashes)."""
+        if self._full is None:
+            full: dict = {}
+            for entries in self.index().values():
+                for e in entries:
+                    full.setdefault(_member(e), e)
+            self._full = full
+        return self._full
+
+    def _merged_map(self) -> dict:
+        out = dict(self.rsf_remap)
+        for src, tgt in self.stock_map.items():
+            out.setdefault(src, self.rsf_remap.get(tgt, tgt))
+        return out
+
+    def _substitute(self, requested: str, name: str, wetness: str, wear: str | None) -> str:
+        """RSF: when the requested path is neither a file nor a key of the stage's remap, the first existing sibling
+        (tint, wetness, wear in that order of preference) stands in for it."""
+        members = self._members()
+        if not requested.startswith("track-") or requested in self.rsf_remap or requested in members:
+            return requested
+        prefix = self.base[:-1]
+        for tint in _TINT_ORDER.get(self.base[-1:].upper(), ""):
+            for wet in _WETNESS_ORDER[wetness]:
+                for ear in _WEAR_ORDER[wear]:
+                    if ear and not wet:
+                        continue
+                    cand = "/".join((f"{prefix}{tint.lower()}_textures", *filter(None, (wet, ear)), name + ".dds"))
+                    hit = members.get(cand)
+                    if hit is not None and hit.zip_path is None:
+                        return cand                          # a loose file wins
+                    if cand in self.rsf_remap:
+                        return self.rsf_remap[cand]
+                    if hit is not None:
+                        return cand
+        return requested
+
+    def resolve(self, raw: str) -> _Entry | None:
+        """The file the game loads for a stage `.ini` texture: `<base>_textures/dry[/new]/<stem>.dds` (ground textures
+        keep the wear folder), the RSF substitute if that is missing, then the RSF and stock filename maps."""
+        stem = re.split(r"[\\/]", raw)[-1]
+        stem = stem.rsplit(".", 1)[0] if "." in stem else stem
+        stem = stem.lower()
+        members, merged = self._members(), self._merged_map()
+        ways = [("dry", "new"), ("dry", None)]
+        if stem not in self.ground:
+            ways.reverse()
+        for wet, wear in ways:
+            path = "/".join((f"{self.base}_textures", wet, *filter(None, (wear,)), stem + ".dds"))
+            path = self._substitute(path, stem, wet, wear).lower()
+            path = merged.get(path, path)
+            e = members.get(path)
+            if e is not None:
+                return _Entry(e.zip_path, e.name, e.rank, "path")
+        return None
+
     def find(self, raw: str) -> _Entry | None:
+        if self.base and raw.lower().rsplit(".", 1)[-1] in {x[1:] for x in IMAGE_EXT}:
+            hit = self.resolve(raw)
+            if hit is not None:
+                return hit
         idx = self.index()
         best = None
         for k in _keys(raw):
@@ -114,6 +198,7 @@ class TextureExporter:
     out_dir: Path
     done: dict = field(default_factory=dict)       # raw request -> (rel path from the package root, has_alpha) | None
     failed: dict = field(default_factory=dict)     # raw request -> reason
+    report_borrowed: bool = True                   # off for the shared sky sets, which are looked up by name
     borrowed: dict = field(default_factory=dict)   # raw request -> where it came from, when not the stage's own set
     _names: dict = field(default_factory=dict)     # file name -> source identity
 
@@ -125,8 +210,8 @@ class TextureExporter:
         if e is None:
             self.failed[raw] = "not found in the stage's texture sets"
         else:
-            low = (str(e.zip_path or "") + "/" + e.name).replace("\\", "/").lower()
-            if self.source.prefer and not any(p in low for p in self.source.prefer):
+            if self.report_borrowed and self.source.base and e.via != "path" and not _member(e).startswith(self.source.base[:-1]):
+                # not where the game would load it from: found by name in some set (the first one that has the name)
                 self.borrowed[raw] = (e.zip_path.name + ":" if e.zip_path else "") + e.name.replace("\\", "/")
             try:
                 res = self._convert(raw, e)
@@ -188,7 +273,42 @@ class TextureExporter:
                 "from_other_sets": dict(self.borrowed)}
 
 
-def for_classic(folder: Path, track: str, letter: str, remap_targets: list[str] | None = None) -> TextureSource:
+def parse_rsf_remap(folder: Path) -> dict:
+    """RSF `TextureFilenameMap<id>.ini`: `source<TAB>target`, `;` comments. A target that does not start with a texture
+    set name (`damp\\new\\x.dds`) is a path inside the set of its source."""
+    out: dict = {}
+    for f in folder.glob("TextureFilenameMap*.ini"):
+        for line in f.read_text(encoding="latin-1", errors="replace").splitlines():
+            if not line.strip() or line.lstrip().startswith(";") or "\t" not in line:
+                continue
+            src, tgt = (x.strip().replace("\\", "/") for x in line.split("\t", 1))
+            if not _SET_NAME.fullmatch(tgt.split("/")[0]):
+                tgt = f"{src.split('/')[0]}/{tgt}"
+            out[src.lower()] = tgt.lower()
+    return out
+
+
+def parse_stock_map(path: Path) -> dict:
+    """`Maps/TextureFilenameMap.dat`: u32 count, then `request\\0target\\0` pairs."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return {}
+    if len(data) < 4:
+        return {}
+    count = int.from_bytes(data[:4], "little")
+    parts = data[4:].split(b"\0")
+    if len(parts) <= 2 * count:
+        return {}
+    out: dict = {}
+    for i in range(count):
+        src = parts[2 * i].decode("latin-1").replace("\\", "/").lower()
+        out.setdefault(src, parts[2 * i + 1].decode("latin-1").replace("\\", "/").lower())
+    return out
+
+
+def for_classic(folder: Path, track: str, letter: str, remap_targets: list[str] | None = None,
+                ground: set | None = None) -> TextureSource:
     """Texture sets around a classic stage folder: its own `track-NN_L_textures`, then every `*_textures` zip or
     folder in the same `Maps` directory (and `Textures` / `Generic` beside it in an RSF install)."""
     maps = folder.parent if folder.parent.name.lower() == "maps" else folder
@@ -199,7 +319,8 @@ def for_classic(folder: Path, track: str, letter: str, remap_targets: list[str] 
         if p.is_dir():
             loose.append(p)
     prefer = [f"{track}_{letter}_textures".lower()] + [t.lower() for t in (remap_targets or [])]
-    return TextureSource(zips, loose, prefer)
+    return TextureSource(zips, loose, prefer, base=f"{track}_{letter}".lower(), ground={g.lower() for g in (ground or ())},
+                         rsf_remap=parse_rsf_remap(folder), stock_map=parse_stock_map(maps / "TextureFilenameMap.dat"))
 
 
 def remap_targets(folder: Path) -> list[str]:

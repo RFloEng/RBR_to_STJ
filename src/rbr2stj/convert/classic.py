@@ -248,7 +248,13 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
 
     if opt.textures and not opt.no_geometry:
         from .. import textures as _tex
-        stage.texture_source = _tex.for_classic(sset.folder, sset.track, sset.letter, _tex.remap_targets(sset.folder))
+        ground = set()
+        if raw["ini"]:
+            from .. import ini as _ini2
+            for sec in _ini2.parse(raw["ini"]):
+                if str(sec.get("IsGroundTexture") or "").strip().lower() in ("1", "true", "yes", "on"):
+                    ground.add(re.split(r"[\\/]", sec.name)[-1].rsplit(".", 1)[0])
+        stage.texture_source = _tex.for_classic(sset.folder, sset.track, sset.letter, _tex.remap_targets(sset.folder), ground)
 
     # spawn from .lbs (2,11)
     if raw["lbs"]:
