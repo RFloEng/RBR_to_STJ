@@ -71,6 +71,10 @@ rbr2stj btb "C:/Games/RSF/RX_CONTENT/Tracks/Pirttikulma" -o out/pirttikulma
 rbr2stj info "C:/Games/RBR/Maps/track-54_M.col"
 ```
 
+Reverse stages: a sibling folder named like the stage plus `Reverse`/`Reversed`/`Rever` is folded in as a `layouts[]` entry
+(`reverse`) with its own timing, pace notes, start pose and edges, but only when its `.col` is byte-identical and its line runs the
+base line backwards; otherwise it stays a separate stage and the reason is printed. `--no-layouts` turns this off.
+
 Options: `--variant M|N|E|O|S`, `--all-variants`, `--surface-states all|default` (nine wear/wetness maps or just
 normal wear at the stage's default wetness), `--surface-table map.json` (adds grip numbers per surface id or name),
 `--no-geometry` (line, timing and notes only), `--mesh-format auto|usda|usdc`, `--usdz` (single-file package, needs the

@@ -202,3 +202,10 @@ Every conversion lists these in `_metadata.provenance.converted_from[].lost`; st
 
 Road width (3.5 m per side), brake-wall drag coefficient (0.5), ford depth (0.15 m), prop masses, bendable stiffness,
 default water depth, time of day per variant letter, surface classes.
+
+## Reverse stages
+
+RSF stores a reverse as its own folder (same `.col`, own `.dls`/`.trk`/`.lbs`). The converter pairs it by name, checks the `.col` hash and
+that the line is the base line backwards, then writes a `layouts[]` entry: `direction: reverse` when the line matches point for point,
+else the stage's own `reference`; timing, pace notes (`race.pacenotes`), spawn and `edges` are the reverse stage's. Ground and meshes stay
+the base stage's. BTB reverses differ in their object sets, so they are not merged.

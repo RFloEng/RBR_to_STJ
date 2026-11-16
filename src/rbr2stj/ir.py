@@ -140,6 +140,7 @@ class Stage:
     origin_offset: tuple[float, float, float] | None = None
     sun_direction: tuple[float, float, float] | None = None
     x_rbr: dict = field(default_factory=dict)
+    layouts: list = field(default_factory=list)               # STJ `layouts[]` entries (a reverse stage found beside this one)
     lost: list[str] = field(default_factory=list)
     diagnostics: dict = field(default_factory=dict)
     file_hashes: dict = field(default_factory=dict)            # ext -> sha256 of the source file (variant sharing)

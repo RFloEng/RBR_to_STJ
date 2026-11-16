@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("path", help="a track-NN_L.trk file or a folder holding one stage")
     c.add_argument("--variant", help="track letter to convert (M, N, E, O or S); default O, M, N, E, S order")
     c.add_argument("--all-variants", action="store_true", help="convert every letter; extras become override layers")
+    c.add_argument("--no-layouts", dest="layouts", action="store_false",
+                   help="do not fold a stage's reverse (a sibling folder named '... Reverse') into it as a layout")
     c.add_argument("--surface-states", choices=["all", "default"], default="all",
                    help="all: nine wear x wetness surface maps; default: only normal wear at the stage's default wetness")
     _common(c)
@@ -115,9 +117,25 @@ def run_classic(a) -> int:
         for L in first.x_rbr["variants_available"]:
             if L != first.info.letter:
                 stages.append(convert_classic(a.path, Options(**{**opt.__dict__, "variant": L, "all_variants": False})))
+    if a.layouts:
+        _add_reverse_layouts(first, Path(a.path), opt)
     pkg = write_package(stages, Path(a.out), opt, user_table=_table(a.surface_table), usdz=a.usdz, validate=a.validate,
                         blend=a.blend, blend_background=a.blend_background)
     return _report(pkg, stages, a.validate)
+
+
+def _add_reverse_layouts(stage, path: Path, opt: Options) -> None:
+    """A reverse stage found beside this one becomes a layout of the package (STJ 3.5)."""
+    from .convert.layouts import find_reverse_folders, reverse_layout
+    folder = path if path.is_dir() else path.parent
+    for rf in find_reverse_folders(folder):
+        lay, why = reverse_layout(stage, rf, opt)
+        if lay:
+            stage.layouts.append(lay)
+            n = len(lay.get("race", {}).get("pacenotes", {}).get("notes", []))
+            print(f"layout 'reverse' <- {rf.name} ({n} pace notes)")
+            break
+        print(f"reverse stage kept separate: {why}")
 
 
 def run_btb(a) -> int:

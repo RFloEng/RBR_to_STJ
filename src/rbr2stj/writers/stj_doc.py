@@ -512,14 +512,7 @@ def track_info(stage: Stage) -> dict:
     return ti
 
 
-def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = None, extra_lost: list[str] | None = None,
-                   variants: list[dict] | None = None, base_letter: str | None = None, source_files=(),
-                   wx_ids: dict | None = None) -> dict:
-    """mesh_files: {"collision": (uri, {state key: (layers, weights)}), "props": (uri, {pid: prim}), ...}"""
-    extra_lost = list(extra_lost or [])
-    line = stage.line
-    doc: dict = {"_metadata": metadata(stage, extra_lost, list(source_files))}
-    doc["track_info"] = track_info(stage)
+def centerline(line) -> dict:
     cl = {"points": [_vec(p) for p in line.points], "closed": False,
           "width": {"left": 3.5, "right": 3.5, "_est": True,
                     "_note": "RBR stages carry no road width; 3.5 m per side is a placeholder"},
@@ -528,9 +521,10 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
         cl["tangents_out"] = [_vec(t) for t in line.tangents]
         if line.tangents_in:
             cl["tangents_in"] = [_vec(t) for t in line.tangents_in]
-    doc["reference"] = {"centerline": cl}
+    return cl
 
-    tm = stage.timing
+
+def timing_block(tm) -> dict:
     timing: dict = {}
     if tm.start is not None:
         timing["start"] = {"s": _r(tm.start)}
@@ -540,9 +534,10 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
         timing["finish"] = {"s": _r(tm.finish)}
     if tm.stop is not None:
         timing["stop"] = {"s": _r(tm.stop)}
-    if timing:
-        doc["timing"] = timing
+    return timing
 
+
+def race_block(stage: Stage) -> dict:
     race: dict = {}
     if stage.notes:
         race["pacenotes"] = {"scale": "ascending_1_6", "language": "en", "notes": stage.notes}
@@ -550,6 +545,44 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
         race["spawns"] = [{"id": "start", "pose": {"position": _vec(stage.spawn.position),
                                                    "heading": _r(stage.spawn.heading, 4)},
                            "_note": "RBR start position; STJ poses place the SVJ origin (front axle midpoint)"}]
+    return race
+
+
+def layout_entry(layout_id: str, name: str, other: Stage, reversed_base: bool, x_rbr: dict) -> dict:
+    """A `layouts[]` entry for a stage that is the base stage run the other way (spec 3.5). `reversed_base`: the other
+    stage's line is the base line backwards, so the layout names `direction: reverse` and takes no line of its own;
+    otherwise it carries the other stage's own line. Timing, pace notes, start pose and edges are the other stage's."""
+    lay: dict = {"id": layout_id, "name": name}
+    if reversed_base:
+        lay["direction"] = "reverse"
+    else:
+        lay["reference"] = {"centerline": centerline(other.line)}
+    timing = timing_block(other.timing)
+    if timing:
+        lay["timing"] = timing
+    race = race_block(other)
+    if race:
+        lay["race"] = race
+    if other.edges:
+        lay["edges"] = other.edges
+    if x_rbr:
+        lay["x_rbr"] = x_rbr
+    return lay
+
+
+def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = None, extra_lost: list[str] | None = None,
+                   variants: list[dict] | None = None, base_letter: str | None = None, source_files=(),
+                   wx_ids: dict | None = None) -> dict:
+    """mesh_files: {"collision": (uri, {state key: (layers, weights)}), "props": (uri, {pid: prim}), ...}"""
+    extra_lost = list(extra_lost or [])
+    line = stage.line
+    doc: dict = {"_metadata": metadata(stage, extra_lost, list(source_files))}
+    doc["track_info"] = track_info(stage)
+    doc["reference"] = {"centerline": centerline(line)}
+    timing = timing_block(stage.timing)
+    if timing:
+        doc["timing"] = timing
+    race = race_block(stage)
     if race:
         doc["race"] = race
 
@@ -606,6 +639,8 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
         doc["surfaces"] = surfaces
     if stage.edges:
         doc["edges"] = stage.edges
+    if stage.layouts:
+        doc["layouts"] = stage.layouts
     water = water_section(stage)
     if mesh_files.get("visual_water"):
         water = water or {"bodies": []}
