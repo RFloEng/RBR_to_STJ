@@ -5,7 +5,7 @@
 <h1 align="center">rbr2stj</h1>
 
 Convert **Richard Burns Rally** stages to **[STJ — Standard Track JSON](https://github.com/RFloEng/STJ-Standard-Track-Json)**
-v0.3 packages: classic stages (`track-NN_<L>.*`, retail and RallySimFans) and BTB stages
+v0.3 packages (v0.4 when a BTB package holds both directions): classic stages (`track-NN_<L>.*`, retail and RallySimFans) and BTB stages
 (`RX_CONTENT/Tracks/<folder>/`).
 
 The output is a folder package. Its root layer is an OpenUSD `.usda` whose `customLayerData["stj"]` holds the STJ
@@ -74,6 +74,11 @@ rbr2stj info "C:/Games/RBR/Maps/track-54_M.col"
 Reverse stages: a sibling folder named like the stage plus `Reverse`/`Reversed`/`Rever` is folded in as a `layouts[]` entry
 (`reverse`) with its own timing, pace notes, start pose and edges, but only when its `.col` is byte-identical and its line runs the
 base line backwards; otherwise it stays a separate stage and the reason is printed. `--no-layouts` turns this off.
+
+BTB: a sibling folder named like the stage plus `II`, `R`, `Reverse`, `Rever` or `Rev` (or the one given with `--reverse`),
+when it is the same road run the other way, goes into the same package as the `reverse` layout: what is identical in both is
+written once and each direction keeps its own ground triangles, objects and textures (STJ 0.4, `layout_only` meshes; details
+in `docs/mapping.md`). It needs the STJ 0.4 tools to validate.
 
 Options: `--variant M|N|E|O|S`, `--all-variants`, `--surface-states all|default` (nine wear/wetness maps or just
 normal wear at the stage's default wetness), `--surface-table map.json` (adds grip numbers per surface id or name),

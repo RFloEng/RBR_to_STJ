@@ -13,7 +13,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..convert import Options
@@ -163,9 +163,134 @@ def _asset_manifest(folder: Path, rels: list[str], stage: Stage) -> list[dict]:
     return out
 
 
+def _split_vegetation(items: list, track):
+    """(vegetation [(item, class)], other [(item, None or class)]) of BTB visual items."""
+    veg, rest = [], []
+    for it in items:
+        cls = _vegetation_class(it, track)
+        many = len(it["matrices"]) > 1 or it.get("instancer")
+        (veg if cls and many else rest).append((it, cls))
+    return veg, rest
+
+
+def _vegetation_entries(veg: list, objs: dict, mesh_id: str) -> list[dict]:
+    return [{"class": cls, "name": it["object"].file, "index": it["object"].index, "material": _first_material(it),
+             "mesh_ref": mesh_id, **objs[it["object"].index]}
+            for it, cls in veg if it["object"].index in objs]
+
+
+def _prop_ids(props: list) -> dict:
+    """{prototype id: Prop}; ids are derived exactly as stj_doc.prototypes_and_instances does."""
+    out: dict = {}
+    for i, p in enumerate(props):
+        b0 = slug(p.name.rsplit(".", 1)[0] if "." in p.name else p.name, f"prop_{i}")
+        pid, k = b0, 2
+        while pid in out:
+            pid, k = f"{b0}_{k}", k + 1
+        out[pid] = p
+    return out
+
+
+def _write_layout_meshes(stage: Stage, folder: Path, stem: str, opt: Options):
+    """The mesh layers of a two-direction BTB package: `<kind>` for what both directions share, `<kind>_forward` for the
+    default layout's own and `<kind>_reverse` (`layout_only`) for the reverse layout's."""
+    merge = stage.merge
+    rev = merge.reverse
+    mesh_files: dict = {"collisions": [], "extra": [], "vegetation": []}
+    written: list[Path] = []
+    ids: dict[str, list[str]] = {"common": [], "forward": [], "reverse": []}
+    inactive: set[str] = set()
+    exporters = {}
+    if stage.texture_source is not None and opt.textures:
+        exporters["forward"] = textures.TextureExporter(stage.texture_source, folder / "textures")
+        exporters["reverse"] = textures.TextureExporter(rev.texture_source, folder / "textures")
+        exporters["reverse"]._names = exporters["forward"]._names       # one folder: the same bytes share a file
+        exporters["common"] = exporters["forward"]
+
+    def name(kind, side):
+        return kind if side == "common" else f"{kind}_{side}"
+
+    def add(side, mid, rel):
+        ids[side].append(mid)
+        written.append(folder / rel)
+        if side == "reverse":
+            inactive.add(rel)
+
+    def only(side):
+        return {"layout_only": True} if side == "reverse" else {}
+
+    for side in ids:
+        mesh = merge.collision.get(side)
+        if mesh is None:
+            continue
+        mid = name("collision", side)
+        rel = f"meshes/{stem}_{mid}.{_mesh_ext(opt, len(mesh.faces))}"
+        used = usd_mesh.write_collision(folder / rel, mesh)
+        mesh_files["collisions"].append((mid, rel, used, mesh, side == "reverse"))
+        add(side, mid, rel)
+
+    for side in ids:
+        source = rev if side == "reverse" else stage
+        veg, rest = _split_vegetation(merge.visual.get(side, []), source.btb_track)
+        for kind, part in (("visual", rest), ("vegetation", veg)):
+            if not part:
+                continue
+            mid = name(kind, side)
+            rel = f"meshes/{stem}_{mid}.usda"
+            info = usd_mesh.write_visual(folder / rel, [i for i, _c in part], source.btb_track, source.shift,
+                                         exporters.get(side))
+            objs = info.pop("objects")
+            stage.diagnostics[mid] = info
+            mesh_files["extra"].append({"id": mid, "uri": rel, "roles": ["visual"], **only(side)})
+            add(side, mid, rel)
+            if kind == "vegetation":
+                mesh_files["vegetation"] += _vegetation_entries(part, objs, mid)
+
+    if merge.box_protos:
+        protos = [replace(p, transforms=[]) for p in merge.box_protos]
+        rel = f"meshes/{stem}_props.usda"
+        by_id = _prop_ids(protos)
+        mesh_files["props"] = (rel, usd_mesh.write_props(folder / rel, by_id))
+        mesh_files["box_props"] = protos
+        add("common", "props", rel)
+        anchors: dict = {"common": None}
+        for side in ("forward", "reverse"):
+            used = {i for i, s, _rows, _raw in merge.box_sets if s == side}
+            if not used:
+                continue
+            if ids[side]:                      # `with_mesh`: these placements exist when the side's own meshes do
+                anchors[side] = ids[side][0]
+                continue
+            mid = name("props", side)          # the direction differs in box placements only: a layer to hang them on
+            rel = f"meshes/{stem}_{mid}.usda"
+            usd_mesh.write_props(folder / rel, {k: v for n, (k, v) in enumerate(by_id.items()) if n in used})
+            mesh_files["extra"].append({"id": mid, "uri": rel, "roles": ["collision"], **only(side)})
+            add(side, mid, rel)
+            anchors[side] = mid
+        mesh_files["box_sets"] = [(i, anchors[s], rows, raw) for i, s, rows, raw in merge.box_sets]
+
+    if exporters:
+        fwd, back = exporters["forward"], exporters["reverse"]
+        done = {v[0] for e in (fwd, back) for v in e.done.values() if v}
+        if done:
+            stage.diagnostics["textures"] = fwd.summary()
+            stage.x_rbr["texture_files"] = {k: v[0] for k, v in fwd.done.items() if v}
+            mesh_files["assets"] = _asset_manifest(folder, sorted(done), stage)
+        base_files = stage.x_rbr.get("texture_files", {})
+        other = {k: v[0] for k, v in back.done.items() if v and base_files.get(k) != v[0]}
+        mesh_files["reverse_x"] = {"texture_files": other} if other else {}
+        if back.failed:
+            stage.diagnostics["textures_reverse"] = back.summary()
+    mesh_files["reverse_include"] = ids["common"] + ids["reverse"]
+    mesh_files["inactive"] = inactive
+    return mesh_files, written
+
+
 def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tuple[Stage, dict] | None = None):
     """Write the stage's mesh layers (reusing the base stage's when the source files are byte-identical, which
     answers PLAN open question 7 per stage); returns (`mesh_files` for build_document, layers written)."""
+    if stage.merge is not None:
+        return _write_layout_meshes(stage, folder, stem, opt)
     mesh_files: dict = {}
     written: list[Path] = []
     exporter = (textures.TextureExporter(stage.texture_source, folder / 'textures')
@@ -184,23 +309,11 @@ def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tup
             mesh_files["props"] = base[1]["props"]
         else:
             rel = f"meshes/{stem}_props.usda"
-            props = {}
-            used: set[str] = set()     # prototype ids are derived exactly as stj_doc.prototypes_and_instances does
-            for i, p in enumerate(stage.props):
-                b0 = slug(p.name.rsplit(".", 1)[0] if "." in p.name else p.name, f"prop_{i}")
-                pid, k = b0, 2
-                while pid in used:
-                    pid, k = f"{b0}_{k}", k + 1
-                used.add(pid)
-                props[pid] = p
-            prims = usd_mesh.write_props(folder / rel, props)
+            prims = usd_mesh.write_props(folder / rel, _prop_ids(stage.props))
             mesh_files["props"] = (rel, prims)
             written.append(folder / rel)
     if stage.visual:
-        veg, rest = [], []
-        for it in stage.visual:
-            cls = _vegetation_class(it, stage.btb_track)
-            (veg if cls and len(it["matrices"]) > 1 else rest).append((it, cls))
+        veg, rest = _split_vegetation(stage.visual, stage.btb_track)
         rel = f"meshes/{stem}_visual.usda"
         info = usd_mesh.write_visual(folder / rel, [i for i, _c in rest], stage.btb_track, stage.shift, exporter)
         info.pop("objects", None)
@@ -214,9 +327,7 @@ def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tup
             stage.diagnostics["vegetation"] = vinfo
             mesh_files.setdefault("extra", []).append({"id": "vegetation", "uri": rel, "roles": ["visual"]})
             written.append(folder / rel)
-            mesh_files["vegetation"] = [{"class": cls, "name": it["object"].file, "index": it["object"].index,
-                                         "material": _first_material(it), **objs[it["object"].index]}
-                                        for it, cls in veg if it["object"].index in objs]
+            mesh_files["vegetation"] = _vegetation_entries(veg, objs, "vegetation")
     if stage.lbs_visual:
         shared = []
         if base and _same(stage, base[0], "lbs", "ini"):
@@ -292,13 +403,16 @@ def _write_meshes(stage: Stage, folder: Path, stem: str, opt: Options, base: tup
     return mesh_files, written
 
 
-def _root_layer(path: Path, mesh_rels: list[str], name: str):
-    """The root layer: a /track Xform that references the mesh layers, so the stage opens in any USD viewer."""
+def _root_layer(path: Path, mesh_rels: list[str], name: str, inactive: set = frozenset()):
+    """The root layer: a /track Xform that references the mesh layers, so the stage opens in any USD viewer. The prims
+    of `layout_only` layers are inactive (spec 7.8), so a plain viewer shows the default layout."""
     from pxr import UsdGeom
     stage = usd_mesh.new_stage(path, "track")
     for rel in mesh_rels:
         prim = stage.DefinePrim(f"/track/{Path(rel).stem}", "Xform")
         prim.GetReferences().AddReference("./" + rel)
+        if rel in inactive:
+            prim.SetActive(False)
     stage.GetRootLayer().documentation = f"STJ track package for {name}. The STJ document is in customLayerData['stj']."
     stage.GetRootLayer().Save()
 
@@ -336,7 +450,9 @@ def write_package(stages: list[Stage], out: Path, opt: Options | None = None, us
     doc = stj_doc.build_document(base, mesh_files=mesh_files, user_table=user_table, variants=all_variants,
                                  base_letter=base_letter, source_files=(), wx_ids=wx_ids)
     mesh_rels = [str(p.relative_to(folder)).replace("\\", "/") for p in written]
-    _root_layer(root, mesh_rels, base.info.name)
+    if base.merge is not None:
+        stj_doc.add_reverse_source(doc, base.merge.reverse, mesh_files["reverse_include"], mesh_files.get("reverse_x", {}))
+    _root_layer(root, mesh_rels, base.info.name, mesh_files.get("inactive", frozenset()))
     embed(doc, root)
     pkg.files += [root] + written
 

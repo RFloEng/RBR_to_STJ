@@ -1,6 +1,6 @@
 # RBR → STJ mapping
 
-How `rbr2stj` turns Richard Burns Rally stage files into STJ v0.3. Format facts come from the reRBR notes
+How `rbr2stj` turns Richard Burns Rally stage files into STJ v0.3 (v0.4 for a BTB package with both directions). Format facts come from the reRBR notes
 (`notes/formats.md`, `notes/btb.md`) and the STJ spec and its accepted proposal `stj_lessons_from_rbr_proposal.md`.
 Each reader's docstring cites the exact note. The answers to the open questions of `PLAN.md` §7 are in
 [Open questions](#open-questions-answered) with their evidence.
@@ -35,13 +35,13 @@ Each reader's docstring cites the exact note. The answers to the open questions 
 | `.dls` sound spheres | `audio.emitters[]` with no `sound`, `max_distance` = the radius word, `x_rbr` (the event name is not in the stage files) | |
 | `.lbs (1,6)` objects named *CLOCK* / *FLAG* | `animated_objects[]` `kind` clock / flag, `target` = the placed prims, no `time_range`, `x_rbr` | the game's script moves them |
 | copied textures | `assets[]` `{id, uri, role: texture, sha256, licence.redistributable: false, source}` | |
-| `Physics/physics.lsp` surface rows + `Physics/*/tyres.lsp` | `surfaces.reference_mu` and `surfaces.library[].by_tyre_class.<class>.mu.peak`, `roughness.sinusoid` | surface `Type` (0 other, 1 gravel, 2 tarmac, 3 snow, 4 dirt, 5 grass) picks each tyre's `SFric_T<Type>`; tyre types map tarmac_dry to road, tarmac_intermediate to intermediate, tarmac_wet to wet, gravel_dry to gravel, snow to snow (gravel_intermediate / gravel_wet only in `surfaces.x_rbr.tyre_types`); `reference_mu` = the tarmac group (STJ-REF); `BumpAmplitude` / `1/BumpFrequency` = sinusoid amplitude / wavelength (`_est`); every raw row in `library[].x_rbr.physics`. Found next to `Maps` / `RX_CONTENT`, or `--physics <folder>` |
+| `Physics/physics.lsp` surface rows + `Physics/*/tyres.lsp` | `surfaces.reference_mu` and `surfaces.library[].by_tyre_class.<class>.mu.peak` | surface `Type` (0 other, 1 gravel, 2 tarmac, 3 snow, 4 dirt, 5 grass) picks each tyre's `SFric_T<Type>`; tyre types map tarmac_dry to road, tarmac_intermediate to intermediate, tarmac_wet to wet, gravel_dry to gravel, snow to snow (gravel_intermediate / gravel_wet only in `surfaces.x_rbr.tyre_types`); `reference_mu` = the tarmac group (STJ-REF); `BumpAmplitude` / `BumpFrequency` are not mapped (the unit of the frequency is in neither the files nor reRBR); they stay raw in `x_rbr.physics`; every raw row in `library[].x_rbr.physics`. Found next to `Maps` / `RX_CONTENT`, or `--physics <folder>` |
 | animation triggers | `x_rbr.triggers[] {object, s, lead}` | also plain triggers, named triggers, sound spheres, animation objects (name, ids, script names) |
 | `.lbs (2,11)` / BTB `spawn.ini` | `race.spawns[start].pose` | |
 | RSF `Tracks<id>.ini` | `track_info` (name, `primary_surface`, `length`, country), author | `Surface` is **0 tarmac, 1 gravel, 2 snow** (see Q-notes) |
 | `TrackSettings<id>.ini` rows | `environment.weather_options[]` | only rows of letters present in the package; `variant` for the extra letters |
-| `DefaultWetness` damp / wet | `environment.default_weather.water_depth` (0.0003 / 0.001 m, `_est`) | |
-| variant letters | `variants[]` + `<name>_<l>.usda` override layers | `default_time.local_time` by letter: M 09:00, E 18:00, N 22:00, O 12:00 (`_est`) |
+| `DefaultWetness` damp / wet | not mapped: no water depth is written | docs/assumptions.md, #5d |
+| variant letters | `variants[]` + `<name>_<l>.usda` override layers | no `default_time` is written (docs/assumptions.md, #5c) |
 
 ### Pace-note tags → STJ
 
@@ -200,12 +200,36 @@ Every conversion lists these in `_metadata.provenance.converted_from[].lost`; st
 
 ## Estimates and placeholders (all marked `_est`)
 
-Road width (3.5 m per side), brake-wall drag coefficient (0.5), ford depth (0.15 m), prop masses, bendable stiffness,
-default water depth, time of day per variant letter, surface classes.
+Brake-wall drag coefficient (0.5), ford depth (0.15 m), prop masses, bendable stiffness, surface classes. No road width,
+road roughness, water depth or time of day is written. `docs/assumptions.md` records the decisions on assumed data.
 
 ## Reverse stages
 
 RSF stores a reverse as its own folder (same `.col`, own `.dls`/`.trk`/`.lbs`). The converter pairs it by name, checks the `.col` hash and
 that the line is the base line backwards, then writes a `layouts[]` entry: `direction: reverse` when the line matches point for point,
 else the stage's own `reference`; timing, pace notes (`race.pacenotes`), spawn and `edges` are the reverse stage's. Ground and meshes stay
-the base stage's. BTB reverses differ in their object sets, so they are not merged.
+the base stage's.
+
+### BTB: one package for both directions (STJ 0.4)
+
+BTB ships each direction as its own folder, with the whole venue in both and differences between them. `rbr2stj btb` pairs a
+folder with a sibling named like it plus `II`, `R`, `Reverse`, `Rever` or `Rev` (`--reverse` names one directly,
+`--no-layouts` turns this off). The name only proposes the pair. It is merged when its line starts and ends within 150 m of
+the other's end and start, 99 % of the forward line lies within 5 m of it, and at least half of the forward ground
+triangles are identical in it. These thresholds decide only whether two folders share a package, never what is written.
+
+| Part | Common mesh | Default layout only | `reverse` only (`layout_only`) |
+|---|---|---|---|
+| Ground | `collision` | `collision_forward` | `collision_reverse` |
+| Drawn objects | `visual`, `vegetation` | `visual_forward`, `vegetation_forward` | `visual_reverse`, `vegetation_reverse` |
+| Box colliders | `props` (the models) | instance sets `with_mesh` a forward mesh | instance sets `with_mesh` a reverse mesh |
+
+Identical means equal as written: a triangle's corners (4 decimals), winding, and the surfaces and weights at each corner;
+a placement's matrix, model (vertices, faces, UV sets, blend weights, material definitions, texture bytes) and LOD
+distances. A different LOD distance is enough to keep a placement apart. Object numbers and `.x` file names belong to the
+exporter and are not compared: common items carry the forward ones, and the reverse stage's object list is in
+`layouts[].x_rbr.objects`. A common object that its other stage placed only once may be written as an instance, whose
+orientation USD stores in half precision. Textures with equal bytes are written once; the same name with other bytes gets a
+suffix. The document declares STJ 0.4, `_metadata.provenance.converted_from` has one entry per source folder, the root USD
+layer keeps the `*_reverse` prims inactive and the `.blend` hides their collections. BTB coordinates of the reverse folder
+use the forward folder's origin shift.

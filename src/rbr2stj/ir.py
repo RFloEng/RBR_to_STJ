@@ -141,6 +141,7 @@ class Stage:
     sun_direction: tuple[float, float, float] | None = None
     x_rbr: dict = field(default_factory=dict)
     layouts: list = field(default_factory=list)               # STJ `layouts[]` entries (a reverse stage found beside this one)
+    merge: object = None                                      # convert.btb_layouts.Merge: a BTB reverse in the same package
     lost: list[str] = field(default_factory=list)
     diagnostics: dict = field(default_factory=dict)
     file_hashes: dict = field(default_factory=dict)            # ext -> sha256 of the source file (variant sharing)

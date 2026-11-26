@@ -45,7 +45,7 @@ def test_sun_direction_is_negated_and_axes_swapped():
                  "DiffuseRed": "0.4", "DiffuseGreen": "0.4", "DiffuseBlue": "0.4"}, "s", "M", None, "x", "y")
     env = stj_doc.weather_env(w)["lighting"]
     assert env["sun"]["direction"] == pytest.approx([0.65318, 0.75522, 0.05472], abs=1e-4)      # towards the sun, Z up
-    assert env["sun"]["color"] == [0.4, 0.4, 0.4] and env["ambient"] == {"color": [0.5, 0.5, 0.5], "intensity": 1.0}
+    assert env["sun"]["color"] == [0.4, 0.4, 0.4] and env["ambient"] == {"color": [0.5, 0.5, 0.5]}
 
 
 def test_sound_spheres_become_engine_event_emitters():
@@ -64,7 +64,7 @@ def test_clocks_and_flags_are_engine_driven_objects():
     assert "time_range" not in objs[0] and "x_rbr" in objs[0]
 
 
-def test_physics_tables_give_absolute_mu_per_tyre_class_and_roughness():
+def test_physics_tables_give_absolute_mu_per_tyre_class_and_no_roughness():
     from rbr2stj.readers import physics_lsp as P
     surf = P.parse_surfaces('''(("PhysicsEngine"
   MaterialManager ("surface types"
@@ -93,4 +93,5 @@ Gravel_Fine_Shallow_Dry                 ("Gravel_Fine_Shallow_Dry" ; id 17, rev 
     entry = {}
     stj_doc._physics_entry(entry, surf[17], physics)
     assert entry["by_tyre_class"] == {"road": {"mu": {"peak": 0.9}}, "gravel": {"mu": {"peak": 1.1}}}
-    assert entry["roughness"]["sinusoid"] == {"amplitude": 0.002, "wavelength": 1.25}
+    assert "roughness" not in entry                      # the unit of BumpFrequency is unknown: the raw row stays in x_rbr
+    assert entry["x_rbr"]["physics"]["BumpFrequency"] == 0.8

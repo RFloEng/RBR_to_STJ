@@ -250,7 +250,7 @@ def test_weather_options_only_for_converted_letters(pkg):
     env = doc_of(pkg[0])["environment"]
     secs = [o["x_rbr"]["section"] for o in env["weather_options"]]
     assert "101M_hazy_clear" in secs and "101N_hazy_clear" not in secs and "101O_E_hazy_partcloud" not in secs
-    assert env["default_time"]["local_time"] == "09:00"
+    assert "default_time" not in env and "default_weather" not in env       # estimates, omitted (docs/assumptions.md #5)
     cond = {o["x_rbr"]["section"]: o["weather"]["condition"] for o in env["weather_options"]}
     assert cond["101M_lightrain_heavycloud"] == "rain" and cond["101M_heavysnow_heavycloud"] == "snow"
 
@@ -266,7 +266,7 @@ def test_all_variants_make_override_layers(tmp_path, classic_stage):
     o = json.loads(layer.customLayerData["stj"])
     assert o["_metadata"]["specification"] == "STJ-OVERRIDE" and o["_metadata"]["base"] == "./test_stage.usda"
     patch = o["patch"]
-    assert patch["environment"]["default_time"]["local_time"] == "22:00"
+    assert "default_time" not in patch.get("environment", {})
     assert len(patch["surfaces"]["maps"]) == 6                          # the night .mat has only 6 entries
     assert "_metadata" not in patch and "scenery" not in patch          # props file identical: shared, not repeated
     assert any(o.get("variant") == "variant_n" for o in d["environment"]["weather_options"])
@@ -281,7 +281,7 @@ def test_open_question_7_identical_files_share_the_mesh(tmp_path, classic_stage)
     assert not (p.folder / "meshes" / "test_stage_e_collision.usda").exists()
     from pxr import Sdf
     patch = json.loads(Sdf.Layer.FindOrOpen(str(p.folder / "test_stage_e.usda")).customLayerData["stj"])["patch"]
-    assert set(patch) == {"environment"}
+    assert set(patch) <= {"environment"}          # presentation only (the time of day is no longer written)
 
 
 def test_merge_diff_is_rfc7396():

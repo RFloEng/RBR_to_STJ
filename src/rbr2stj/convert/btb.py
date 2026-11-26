@@ -85,7 +85,8 @@ def _scale_unit_tangents(line, diag):
     diag["tangents_scaled_to_chord"] = True
 
 
-def convert_btb(path, opt: Options | None = None) -> Stage:
+def convert_btb(path, opt: Options | None = None, shift: tuple | None = None) -> Stage:
+    """`shift`: the x/y origin shift to use instead of the stage's own, so that two stages share coordinates."""
     opt = opt or Options()
     t = btb.open_folder(path)
     lost: list[str] = []
@@ -98,9 +99,11 @@ def convert_btb(path, opt: Options | None = None) -> Stage:
         raise FormatError("driveline.ini: a stage needs at least two driveline points")
     line = build_line(pts, tans, dist, lost, diag)
     origin = None
-    if max(max(abs(p[0]), abs(p[1])) for p in line.points) > LIMIT_M:
-        cx = round(sum(p[0] for p in line.points) / len(line.points))
-        cy = round(sum(p[1] for p in line.points) / len(line.points))
+    if shift is None and max(max(abs(p[0]), abs(p[1])) for p in line.points) > LIMIT_M:
+        shift = (round(sum(p[0] for p in line.points) / len(line.points)),
+                 round(sum(p[1] for p in line.points) / len(line.points)))
+    if shift is not None and any(shift):
+        cx, cy = shift
         origin = (float(cx), float(cy), 0.0)
         line.points = [(p[0] - cx, p[1] - cy, p[2]) for p in line.points]
     ox, oy = (origin[0], origin[1]) if origin else (0.0, 0.0)

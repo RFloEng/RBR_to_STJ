@@ -290,6 +290,12 @@ def convert_classic(path, opt: Options | None = None) -> Stage:
 
     if not opt.no_geometry:
         _geometry(stage, t, raw, opt, sh, ref, lost, d)
+    if stage.collision and stage.collision.states:
+        undefined = sorted({s for st in stage.collision.states for s in st.palette
+                            if s not in surfaces_table.NAMES and s != 0})
+        if undefined:
+            lost.append("surface ids not defined by the game's surface table, kept by id only (no class, grip or impact): "
+                        + ", ".join(str(s) for s in undefined))
     if info.surface is None and stage.collision and stage.collision.states:
         # retail stages carry no surface word: take the class most faces are made of (first layer of the first state)
         st0 = stage.collision.states[0]

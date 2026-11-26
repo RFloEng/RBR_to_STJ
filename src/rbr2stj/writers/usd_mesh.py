@@ -258,6 +258,7 @@ def write_collision(path: Path, mesh: CollisionMesh, material_name: str = "Groun
     stage = new_stage(path, "collision")
     mat = preview_material(stage, f"/collision/materials/{material_name}")
     m = add_mesh(stage, "/collision/mesh", mesh.points, mesh.faces, mat)
+    m.CreateDoubleSidedAttr(True)       # STJ 7.2: RBR does not tell the sides apart, so both are solid
     multi = len(mesh.states) > 1 if multi is None else multi
     names = {}
     for st in mesh.states:
@@ -276,7 +277,7 @@ def write_props(path: Path, props_by_id: dict[str, Prop]):
         base = f"/props/{pid}"
         from pxr import UsdGeom
         UsdGeom.Xform.Define(stage, base)
-        add_mesh(stage, f"{base}/{pid}", p.vertices, p.faces)
+        add_mesh(stage, f"{base}/{pid}", p.vertices, p.faces).CreateDoubleSidedAttr(True)
         out[pid] = base
     stage.GetRootLayer().Save()
     return out
@@ -404,7 +405,7 @@ def write_visual(path: Path, visuals, track, shift=(0.0, 0.0), exporter=None):
         o, mesh, matrices = item["object"], item["mesh"], item["matrices"]
         base = f"/visual/obj_{o.index}_{usd_name(o.file, 'mesh')}"
         UsdGeom.Xform.Define(stage, base)
-        many = len(matrices) > 1
+        many = len(matrices) > 1 or bool(item.get("instancer"))
         if many:
             inst = UsdGeom.PointInstancer.Define(stage, f"{base}/instances")
             proto_path = f"{base}/instances/proto"             # prototypes live under their instancer

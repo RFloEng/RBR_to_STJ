@@ -110,9 +110,11 @@ def run():
                     mat.surface_render_method = "DITHERED"
             apply_mtlx({mtlx!r})
             # the sky domes and cloud layers follow the camera in the game: at the origin they cover the stage, so hide
-            # them by default (data and collections stay; only the visibility changes)
+            # them by default, and the meshes of another layout (`layout_only`) with them (data and collections stay;
+            # only the visibility changes)
             for col in bpy.data.collections:
-                if col.name.startswith("STJ::mesh::") and col.name.endswith(("_clouds", "_skyboxes")):
+                if col.name.startswith("STJ::mesh::") and (col.name.endswith(("_clouds", "_skyboxes"))
+                                                          or col.name[len("STJ::mesh::"):] in {hidden!r}):
                     col.hide_viewport = True
             bpy.ops.wm.save_as_mainfile(filepath={out!r})
             print("wrote", {out!r})
@@ -179,6 +181,19 @@ def collect_mtlx(root: Path) -> dict:
     return out
 
 
+def layout_only_meshes(root: Path) -> list[str]:
+    """Ids of the `layout_only` meshes in the document of the root layer: hidden in the .blend (it shows the default)."""
+    try:
+        from pxr import Sdf
+    except ImportError:
+        return []
+    import json
+    layer = Sdf.Layer.FindOrOpen(str(root))
+    text = (layer.customLayerData or {}).get("stj") if layer else None
+    doc = json.loads(text) if text else {}
+    return [m["id"] for m in (doc.get("geometry") or {}).get("meshes", []) if m.get("layout_only")]
+
+
 def write_blend(root: Path, tools: Path | None, background: bool = False, blender: Path | None = None,
                 timeout: int = 1800) -> tuple[int, str, Path | None]:
     """Returns (exit code, message, .blend path). Code -1 means skipped (Blender or STJ tools missing)."""
@@ -194,7 +209,8 @@ def write_blend(root: Path, tools: Path | None, background: bool = False, blende
     with tempfile.TemporaryDirectory() as td:
         status = Path(td) / "status.txt"
         drv = Path(td) / "driver.py"
-        drv.write_text(_DRIVER.format(tools=str(bdir), root=str(root), out=str(out), status=str(status), mtlx=collect_mtlx(root)),
+        drv.write_text(_DRIVER.format(tools=str(bdir), root=str(root), out=str(out), status=str(status), mtlx=collect_mtlx(root),
+                                      hidden=layout_only_meshes(root)),
                        encoding="utf-8")
         cmd = [str(exe)] + (["-b"] if background else []) + ["--factory-startup", "--python", str(drv)]
         try:

@@ -14,12 +14,13 @@ from ..ir import Stage
 from ..readers import surfaces_table
 
 VERSION = "0.3"
+VERSION_LAYOUT_GEOMETRY = "0.4"      # a document with `layout_only` meshes (spec 3.5)
 
 # What every conversion drops (PLAN.md §8). Format-specific lines are added per stage.
 LOST_ALWAYS = [
     "Tyre and car physics, and how wetness and wear change grip: surfaces carry each tyre's absolute mu per surface group "
     "(from Physics/physics.lsp and tyres.lsp when the install is found, wetness included: SFric + WetSlope * "
-    "|WetnessDesign - WaterFactor|) and the sinusoidal roughness, but the soil and rolling-resistance values stay in "
+    "|WetnessDesign - WaterFactor|); the roughness (BumpAmplitude / BumpFrequency), the soil and rolling-resistance values stay in "
     "x_rbr (one default value on 148 of 149 rows); without the Physics folder surfaces carry class and RBR id only (--surface-table can supply numbers)",
     "NGP ruts and deformation state",
     "RBR shaders (shadow and specular maps are carried per material; the shader blend, specular power and colour are not "
@@ -30,7 +31,6 @@ LOST_ALWAYS = [
     "Tyre wear (WearFtr, WetnessWearFtr): no STJ slot for tread wear; stays in x_rbr",
 ]
 
-TIME_OF_DAY = {"M": "09:00", "E": "18:00", "N": "22:00", "O": "12:00"}
 VARIANT_NAMES = {"M": "Morning", "N": "Night", "E": "Evening", "O": "Overcast", "S": "Variant S"}
 VARIANT_KIND = {"M": "time_of_day", "N": "time_of_day", "E": "time_of_day", "O": "weather", "S": "other"}
 
@@ -129,7 +129,7 @@ def _physics_entry(entry: dict, row: dict, physics: dict):
     """Grip and roughness of one surface from physics.lsp / tyres.lsp.
 
     Mapped: the grip group (`Type`) selects each tyre's `SFric_T<group>`, which is that tyre's absolute mu on the
-    surface (`by_tyre_class.<class>.mu.peak`); `BumpAmplitude` / `BumpFrequency` become the sinusoidal roughness.
+    surface (`by_tyre_class.<class>.mu.peak`); `BumpAmplitude` / `BumpFrequency` are kept raw in x_rbr (no roughness is written).
     Not mapped, kept raw in x_rbr: myStatic/myKinetic, SoilThickness, SinkFactor, SoilDensity and RollingResistance (the
     same default on 148 of 149 rows), WaterFactor and the tyres' WetSlope / WearFtr (the formula that combines them is
     not documented), CollMyHigh/Low and eHigh/eLow (collision friction and stiffness of solids)."""
@@ -138,14 +138,13 @@ def _physics_entry(entry: dict, row: dict, physics: dict):
     mus = _tyre_mu(physics, group, float(wf) if isinstance(wf, (int, float)) else 0.0)
     if mus:
         entry["by_tyre_class"] = {cls: {"mu": {"peak": v}} for cls, v in mus.items()}
-    amp, freq = row.get("BumpAmplitude"), row.get("BumpFrequency")
-    if isinstance(amp, (int, float)) and isinstance(freq, (int, float)) and amp > 0 and freq > 0:
-        entry["roughness"] = {"sinusoid": {"amplitude": amp, "wavelength": round(1.0 / freq, 4)},
-                              "_est": True, "_note": "BumpFrequency read as cycles per metre"}
+    # BumpAmplitude / BumpFrequency are not mapped: the unit of the frequency is not in the files or in reRBR
+    # (docs/assumptions.md, #3); the raw row stays in x_rbr.physics.
     entry.pop("_est", None)
     entry["_source"] = (f"grip from {physics.get('source')}: surface group {group} ({_group_name(group)}), "
                         f"mu = SFric_T{group} + WetSlope_T{group} * |WetnessDesign - WaterFactor| per tyre type, "
-                        f"WaterFactor {wf if wf is not None else 0} (new tyre)")
+                        f"WaterFactor {wf if wf is not None else 0} (new tyre); the game's own mu, relative to its tyres and "
+                        "asphalt (spec 14), not a measured mf_scaling")
     entry.setdefault("x_rbr", {})["physics"] = {k: v for k, v in row.items() if k != "name"}
 
 
@@ -154,21 +153,43 @@ def _group_name(g: int) -> str:
     return physics_lsp.GROUPS.get(g, "?")
 
 
-def _surface_library(stage: Stage, user_table: dict | None) -> dict:
+# physics.lsp surface Type -> STJ class (the other classes are not in the game's data)
+TYPE_CLASS = {1: "gravel", 2: "asphalt", 3: "snow", 4: "dirt", 5: "grass"}
+
+
+def _surface_library(stage: Stage, user_table: dict | None, meshes: list) -> dict:
     ids = set()
-    if stage.collision:
-        for st in stage.collision.states:
+    for mesh in meshes:
+        for st in mesh.states:
             ids.update(st.palette)
     lib = {}
     for sid in sorted(ids):
         name = surfaces_table.name(sid)
         cls, resp = surfaces_table.classify(sid)
+        row = (stage.physics or {}).get("surfaces", {}).get(sid)
+        typed = TYPE_CLASS.get(int(row.get("Type", 0))) if row else None
+        if typed:
+            src = f"class from the physics.lsp surface Type ({row.get('Type')}); no other class data"
+            cls = typed
+        elif row:
+            # Type 0 ("other"): the name only separates what Type has no class for (docs/assumptions.md, #2)
+            cls = cls if cls in ("rock", "water", "metal") else "other"
+            src = "physics.lsp Type 0; class from the surface name only for rock, water and metal"
+        else:
+            src = "class guessed from the RBR surface name (no physics.lsp row)"
         entry = {"name": name.replace("_", " "), "class": cls, "_est": True,
-                 "_source": "class guessed from the RBR surface name; no grip numbers (see provenance.lost)",
+                 "_source": src + "; no grip numbers (see provenance.lost)",
                  "x_rbr": {"id": sid, "name": name}}
+        if sid not in surfaces_table.NAMES and sid != 0:
+            # an id the game's surface table does not define (reRBR E44_TableBuild): not converted (docs/assumptions.md, #4)
+            entry = {"name": f"RBR surface id {sid} (not converted)", "class": "other",
+                     "_source": f"RBR surface id {sid} is not in the game's surface table: no class, grip or impact; "
+                                "the id is kept so the surface maps stay valid",
+                     "x_rbr": {"id": sid, "not_converted": True}}
+            lib[surfaces_table.stj_id(sid)] = entry
+            continue
         if resp:
             entry["impact"] = {"response": resp}
-        row = (stage.physics or {}).get("surfaces", {}).get(sid)
         if row:
             _physics_entry(entry, row, stage.physics)
         if user_table:
@@ -196,9 +217,9 @@ def _state_when(wear: str, wet: str) -> dict:
     return {"all": [_condition_range("wear", *WEAR_RANGE[wear]), _condition_range("wetness", *WET_RANGE[wet])]}
 
 
-def surface_maps(stage: Stage, names: dict, mesh_id: str, material: str) -> list[dict]:
+def surface_maps(stage: Stage, names: dict, mesh_id: str, material: str, mesh=None) -> list[dict]:
     maps = []
-    states = stage.collision.states
+    states = (mesh or stage.collision).states
     single = len(states) == 1 and len(states[0].merged) in (0, 1, 9)
     for st in states:
         lp, wp = names[st.key]
@@ -219,11 +240,23 @@ def surface_maps(stage: Stage, names: dict, mesh_id: str, material: str) -> list
     return maps
 
 
-def prototypes_and_instances(stage: Stage, prim_paths: dict[str, str], mesh_id: str):
-    """(prototypes dict, instances list, {prop index: id}) from stage.props."""
+def transform_rows(transforms) -> list[list]:
+    """STJ instance rows (x, y, z, heading[, scale]) of a Prop's placements."""
+    out = []
+    for x, y, z, h, s in transforms:
+        s = abs(s) or 1.0        # a negative scale (a mirrored placement) is invalid in STJ; the raw one is in x_rbr.placements
+        row = [_r(x), _r(y), _r(z), _r(h, 4)]
+        if abs(s - 1.0) > 1e-4:
+            row.append(_r(s, 4))
+        out.append(row)
+    return out
+
+
+def prototypes_and_instances(props: list, prim_paths: dict[str, str], mesh_id: str):
+    """(prototypes dict, instances list, {prop index: id}) from the stage's props."""
     protos, instances, ids = {}, [], {}
     used: set[str] = set()
-    for i, p in enumerate(stage.props):
+    for i, p in enumerate(props):
         base = slug(p.name.rsplit(".", 1)[0] if "." in p.name else p.name, f"prop_{i}")
         pid, k = base, 2
         while pid in used:
@@ -244,14 +277,8 @@ def prototypes_and_instances(stage: Stage, prim_paths: dict[str, str], mesh_id: 
             proto["physics"] = phys
         protos[pid] = proto
         if p.transforms:
-            tf = []
-            for x, y, z, h, s in p.transforms:
-                s = abs(s) or 1.0        # a negative scale (a mirrored placement) is invalid in STJ; the raw one is in x_rbr.placements
-                row = [_r(x), _r(y), _r(z), _r(h, 4)]
-                if abs(s - 1.0) > 1e-4:
-                    row.append(_r(s, 4))
-                tf.append(row)
-            instances.append({"prototype": pid, "transforms": tf, "x_rbr": {"placements": p.placements_raw}})
+            instances.append({"prototype": pid, "transforms": transform_rows(p.transforms),
+                              "x_rbr": {"placements": p.placements_raw}})
     return protos, instances, ids
 
 
@@ -406,8 +433,9 @@ def weather_env(w, sky_note: bool = True) -> dict:
     sky: dict = {"model": "engine_default"}
     fog = _fog(s)
     if fog:
-        sky["fog"] = {**fog, "_est": True,
-                      "_note": f"RBR linear fog of weather {w.section}: visibility = FogEnd, colour = Fog RGB as stored"}
+        sky["fog"] = {**fog,
+                      "_note": f"RBR linear fog of weather {w.section} (metres from the eye, reRBR atmosphere.rs): "
+                               "visibility = FogEnd, colour = Fog RGB as stored (colour space not verified)"}
     sky["x_rbr"] = {k: s[k] for k in ("SkyboxName", "SkyboxSaturation", "Skybox_Scale", "CloudName", "Cloud_Scale",
                                       "Superbowl_Scale", "SuperbowlFogStart", "SuperbowlFogEnd", "Turbidity",
                                       "Rayleigh_Multiplier", "Mie_Multiplier", "Greenstein_Value", "Extinction",
@@ -424,7 +452,7 @@ def weather_env(w, sky_note: bool = True) -> dict:
         light["sun"] = sun
     ac = _rgb(low, ("ambientred", "ambientgreen", "ambientblue"))
     if ac:
-        light["ambient"] = {"color": ac, "intensity": 1.0}
+        light["ambient"] = {"color": ac}  # intensity left to the schema default (1); docs/assumptions.md #11
     rest = {k: s[k] for k in s if k.lower().startswith(("car_", "character_", "particle_", "specular", "terrain_reflectance",
                                                           "sun_", "sunoffset"))}
     if rest:
@@ -444,14 +472,8 @@ def environment_section(stage: Stage, base_letter: str | None, variants: list[st
     wx_ids = wx_ids or {}
     if stage.origin_offset:
         env["origin_offset"] = _vec(stage.origin_offset)
-    letter = stage.info.letter
-    if letter and letter in TIME_OF_DAY:
-        env["default_time"] = {"local_time": TIME_OF_DAY[letter],
-                               "_note": f"estimate from the RBR variant letter {letter}"}
-    if stage.info.default_wetness in (1, 2):
-        depth = 0.0003 if stage.info.default_wetness == 1 else 0.001
-        env["default_weather"] = {"water_depth": depth, "_est": True,
-                                  "_note": "from RSF DefaultWetness (damp/wet); the depth is an estimate"}
+    # no default_time (it was an estimate from the variant letter) and no default_weather.water_depth (an estimate from
+    # DefaultWetness): docs/assumptions.md, #5c and #5d
     opts = []
     present = {base_letter, *variants}
     for w in stage.weathers:
@@ -462,8 +484,7 @@ def environment_section(stage: Stage, base_letter: str | None, variants: list[st
         fog = _fog(w.settings)
         if fog:
             row["weather"]["visibility"] = fog["visibility"]
-            row["weather"]["_note"] = "visibility = RBR FogEnd (linear fog: fully fogged there); an estimate"
-            row["weather"]["_est"] = True
+            row["weather"]["_note"] = "visibility = RBR FogEnd (linear fog: fully fogged there)"
         if w.section in wx_ids:
             row["variant"] = wx_ids[w.section]
         elif w.letter != base_letter:
@@ -513,9 +534,8 @@ def track_info(stage: Stage) -> dict:
 
 
 def centerline(line) -> dict:
+    # no `width`: RBR stages carry no road width, and the schema does not require one (docs/assumptions.md, #1)
     cl = {"points": [_vec(p) for p in line.points], "closed": False,
-          "width": {"left": 3.5, "right": 3.5, "_est": True,
-                    "_note": "RBR stages carry no road width; 3.5 m per side is a placeholder"},
           "chainage": [_r(c) for c in line.chainage]}
     if line.tangents:
         cl["tangents_out"] = [_vec(t) for t in line.tangents]
@@ -570,10 +590,31 @@ def layout_entry(layout_id: str, name: str, other: Stage, reversed_base: bool, x
     return lay
 
 
+def add_reverse_source(doc: dict, reverse: Stage, include_meshes: list[str], layout_x: dict) -> None:
+    """The second source of a two-direction BTB package: its layout's mesh selection, its provenance, STJ 0.4."""
+    lay = next(l for l in doc["layouts"] if l["id"] == "reverse")
+    lay["include_meshes"] = include_meshes
+    lay.setdefault("x_rbr", {}).update(layout_x)
+    meta = doc["_metadata"]
+    meta["version"] = VERSION_LAYOUT_GEOMETRY
+    sources = meta["provenance"]["converted_from"]
+    first = sources[0]
+    said = set(first["lost"])
+    own = [line for line in reverse.lost if line not in said]
+    first["lost"] = first["lost"] + [
+        "two source stages in one package: triangles and placements identical in both are written once, with the forward "
+        "stage's object numbers and file names (the reverse stage's object list is in layouts[reverse].x_rbr.objects); "
+        "identical means equal as written (coordinates and weights to 4 decimals, placement matrices exactly)"]
+    sources.append({**first, "source": reverse.source,
+                    "lost": own or ["the same losses as the forward stage (first entry)"]})
+
+
 def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = None, extra_lost: list[str] | None = None,
                    variants: list[dict] | None = None, base_letter: str | None = None, source_files=(),
                    wx_ids: dict | None = None) -> dict:
-    """mesh_files: {"collision": (uri, {state key: (layers, weights)}), "props": (uri, {pid: prim}), ...}"""
+    """mesh_files: {"collision": (uri, {state key: (layers, weights)}), "props": (uri, {pid: prim}), ...}
+    A package of two directions gives "collisions" [(mesh id, uri, names, CollisionMesh, layout_only)] instead of
+    "collision", and "box_props" / "box_sets" for the box colliders."""
     extra_lost = list(extra_lost or [])
     line = stage.line
     doc: dict = {"_metadata": metadata(stage, extra_lost, list(source_files))}
@@ -588,19 +629,27 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
 
     geometry_meshes = []
     surfaces: dict = {}
-    if stage.collision is not None and "collision" in mesh_files:
-        uri, names = mesh_files["collision"]
-        geometry_meshes.append({"id": "collision", "uri": uri, "roles": ["collision"]})
-        surfaces["library"] = _surface_library(stage, user_table)
+    collisions = mesh_files.get("collisions")
+    if collisions is None and stage.collision is not None and "collision" in mesh_files:
+        collisions = [("collision", *mesh_files["collision"], stage.collision, False)]
+    if collisions:
+        for mid, uri, _names, _mesh, only in collisions:
+            geometry_meshes.append({"id": mid, "uri": uri, "roles": ["collision"], **({"layout_only": True} if only else {})})
+        surfaces["library"] = _surface_library(stage, user_table, [c[3] for c in collisions])
         rm = reference_mu(stage.physics)
         if rm:
             surfaces["reference_mu"] = rm
             surfaces["x_rbr"] = {"tyre_types": stage.physics["tyres"], "physics_source": stage.physics["source"]}
-        surfaces["maps"] = surface_maps(stage, names, "collision", "Ground")
-    if stage.props and "props" in mesh_files:
+        surfaces["maps"] = [m for mid, _uri, names, mesh, _only in collisions
+                            for m in surface_maps(stage, names, mid, "Ground", mesh)]
+    box_props = mesh_files.get("box_props", stage.props)
+    if box_props and "props" in mesh_files:
         uri, prims = mesh_files["props"]
         geometry_meshes.append({"id": "props", "uri": uri, "roles": ["collision"]})
-        protos, inst, _ids = prototypes_and_instances(stage, prims, "props")
+        protos, inst, ids = prototypes_and_instances(box_props, prims, "props")
+        for index, anchor, rows, raw in mesh_files.get("box_sets", []):
+            inst.append({"prototype": ids[index], "transforms": transform_rows(rows), "x_rbr": {"placements": raw},
+                         **({"with_mesh": anchor} if anchor else {})})
         doc["scenery"] = {"prototypes": protos, "instances": inst}
     veg = mesh_files.get("vegetation")
     if veg:
@@ -613,9 +662,9 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
                 pid, k = f"{base_id}_{k}", k + 1
             used.add(pid)
             sc["prototypes"][pid] = {"name": v["name"], "class": v["class"], "collision": "none",
-                                     "mesh": {"mesh_ref": "vegetation", "prim": v["proto"]},
+                                     "mesh": {"mesh_ref": v.get("mesh_ref", "vegetation"), "prim": v["proto"]},
                                      "x_btb": {"object": v["index"], "material": v["material"]}}
-            sc["instances"].append({"prototype": pid, "usd": {"mesh_ref": "vegetation", "prim": v["instancer"]},
+            sc["instances"].append({"prototype": pid, "usd": {"mesh_ref": v.get("mesh_ref", "vegetation"), "prim": v["instancer"]},
                                     "_note": f"{v['count']} placements of BTB object {v['index']}, class from the material name"})
     wind = mesh_files.get("wind")
     if wind:
@@ -623,8 +672,8 @@ def build_document(stage: Stage, *, mesh_files: dict, user_table: dict | None = 
         sc["prototypes"]["lane_foliage"] = {
             "name": "Object lanes with sway (grass, bushes and cards)", "class": "other", "collision": "none",
             "mesh": {"mesh_ref": wind["mesh_ref"], "prim": "/extras/lanes"},
-            "wind": {"amplitude": 0.1, "frequency": wind["frequency"], "weight_primvar": "stj_wind_weight",
-                     "phase_primvar": "stj_wind_phase", "_est": True,
+            "wind": {"amplitude": 0.1, **({"frequency": wind["frequency"]} if wind["frequency"] is not None else {}),
+                     "weight_primvar": "stj_wind_weight", "phase_primvar": "stj_wind_phase", "_est": True,
                      "_note": "weight and phase are read from the RLSingleTextureSway vertices (weight 0..1, phase in "
                               "radians turned into turns); the frequency is the median of the stored values "
                               f"{wind['frequencies']} and the amplitude in metres is a placeholder: the game's shader scale "

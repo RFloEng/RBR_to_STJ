@@ -55,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     _common(c)
     b = sub.add_parser("btb", help="a BTB stage folder (RX_CONTENT/Tracks/<folder>)")
     b.add_argument("path")
+    b.add_argument("--no-layouts", dest="layouts", action="store_false",
+                   help="do not fold the same road run the other way (a sibling folder named '... II', '... R' or "
+                        "'... Reverse') into the package as a layout")
+    b.add_argument("--reverse", help="the folder of the other direction, when its name does not say so")
     _common(b)
     i = sub.add_parser("info", help="summarise a stage file or folder")
     i.add_argument("path")
@@ -138,11 +142,27 @@ def _add_reverse_layouts(stage, path: Path, opt: Options) -> None:
         print(f"reverse stage kept separate: {why}")
 
 
+def _add_btb_reverse(stage, folder: Path, explicit: str | None, opt: Options) -> None:
+    """The same road run the other way, when it is there, goes into the package as a layout with its own objects."""
+    from .convert.btb_layouts import find_btb_reverse_folders, merge_reverse
+    for rf in [Path(explicit)] if explicit else find_btb_reverse_folders(folder):
+        merge, why = merge_reverse(stage, rf, opt)
+        if merge:
+            stage.merge = merge
+            print(f"layout 'reverse' <- {rf.name}")
+            for what, n in merge.stats.items():
+                print(f"  {what}: {n['common']} common, {n['forward']} forward only, {n['reverse']} reverse only")
+            break
+        print(f"reverse stage kept separate: {why}")
+
+
 def run_btb(a) -> int:
     from .convert.btb import convert_btb
     from .writers.package import write_package
     opt = Options(no_geometry=a.no_geometry, mesh_format=a.mesh_format, textures=a.textures, physics=a.physics)
     st = convert_btb(a.path, opt)
+    if a.layouts:
+        _add_btb_reverse(st, Path(a.path), a.reverse, opt)
     pkg = write_package([st], Path(a.out), opt, user_table=_table(a.surface_table), usdz=a.usdz, validate=a.validate,
                         blend=a.blend, blend_background=a.blend_background)
     return _report(pkg, [st], a.validate)

@@ -191,6 +191,10 @@ def slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_") or "texture"
 
 
+def _holds(path: Path, data: bytes) -> bool:
+    return path.is_file() and path.stat().st_size == len(data) and path.read_bytes() == data
+
+
 @dataclass
 class TextureExporter:
     """Copies requested textures, unchanged, to `<out>/textures/`, once each; remembers what it wrote and what failed."""
@@ -240,7 +244,8 @@ class TextureExporter:
         stem = slug(orig.rsplit(".", 1)[0])
         ident = (str(e.zip_path), e.name)
         name, k = stem, 2
-        while self._names.get(name, ident) != ident:
+        # a name taken by another source file is shared when that file has the same bytes (two stages in one package)
+        while self._names.get(name, ident) != ident and not _holds(self.out_dir / f"{name}.{ext}", data):
             name, k = f"{stem}_{k}", k + 1
         self._names[name] = ident
         self.out_dir.mkdir(parents=True, exist_ok=True)
